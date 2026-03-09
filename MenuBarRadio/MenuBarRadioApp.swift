@@ -2,16 +2,27 @@
 //  MenuBarRadioApp.swift
 //  MenuBarRadio
 //
-//  Created by Dirk Clemens on 09.03.26.
-//
 
 import SwiftUI
 
 @main
 struct MenuBarRadioApp: App {
+    @StateObject private var player = RadioPlayer()
+
     var body: some Scene {
-        WindowGroup {
+        MenuBarExtra {
             ContentView()
+                .environmentObject(player)
+        } label: {
+            MenuBarLabelView()
+                .environmentObject(player)
+                .help(player.menuBarTooltip)
+        }
+        .menuBarExtraStyle(.window)
+
+        Settings {
+            SettingsView()
+                .environmentObject(player)
         }
     }
 }
