@@ -1,6 +1,7 @@
 # MenuBarRadio
 
-`MenuBarRadio` is a macOS SwiftUI `MenuBarExtra` app for streaming web radio with live now-playing metadata.
+MenuBarRadio is a macOS SwiftUI "MenuBarExtra" app for streaming web radio with live now-playing metadata.    
+Fully vibe coded / agentic coded using GPT-5.3-Codex
 
 ## Current Features
 
