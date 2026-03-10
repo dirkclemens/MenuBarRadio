@@ -1,7 +1,6 @@
 # MenuBarRadio
 
-MenuBarRadio is a macOS SwiftUI "MenuBarExtra" app for streaming web radio with live now-playing metadata.    
-Fully vibe coded / agentic coded using GPT-5.3-Codex
+MenuBarRadio is a macOS SwiftUI "MenuBarExtra" app for streaming web radio with live now-playing metadata.
 
 ---
 
@@ -24,6 +23,7 @@ Fully vibe coded / agentic coded using GPT-5.3-Codex
   - artist
   - title
   - year (when available)
+  - release date (localized)
   - artwork image (when available)
 - Configurable menu bar label:
   - show/hide artist
@@ -41,20 +41,29 @@ Fully vibe coded / agentic coded using GPT-5.3-Codex
   - set optional metadata API URL
   - favorite stations
   - configure metadata refresh interval
+- Auto-play last station on app launch (optional).
 - Volume control (uses default macOS output device).
+- Right-click copy artwork to clipboard.
+- Text selection enabled in metadata panel for easy copy.
 
 ## Project Structure
 
 - `MenuBarRadioApp.swift`: app entry, `MenuBarExtra`, settings scene.
-- `RadioPlayer.swift`: playback engine, metadata parsing, persistence orchestration.
+- `Service/RadioPlayer.swift`: playback engine, metadata parsing, persistence orchestration.
 - `Models.swift`: station, metadata, and app settings models.
 - `SettingsStore.swift`: `UserDefaults` JSON persistence.
-- `ContentView.swift`: menu popup UI.
-- `SettingsView.swift`: station and display configuration UI.
-- `RadioDirectory.swift`: provider-agnostic directory interface and Radio Browser implementation.
-- `MusicMetadataEnrichmentService.swift`: year/release-date enrichment with caching and throttling.
-- `ArtworkView.swift`: now-playing artwork rendering.
-- `MenuBarLabelView.swift`: menu bar icon + dynamic text label.
+- `View/ContentView.swift`: menu popup layout.
+- `View/HeaderView.swift`: station picker + play/pause.
+- `View/MetadataView.swift`: now-playing metadata panel.
+- `View/VolumeView.swift`: volume slider.
+- `View/StationListView.swift`: station list.
+- `View/FooterActionsView.swift`: settings + quit row.
+- `View/SettingsView.swift`: station and display configuration UI.
+- `Service/RadioDirectory.swift`: provider-agnostic directory interface and Radio Browser implementation.
+- `Service/MusicMetadataEnrichmentService.swift`: year/release-date/artwork enrichment with caching and throttling.
+- `Support/NowPlayingMetadata+ReleaseDate.swift`: release date formatting helpers.
+- `View/ArtworkView.swift`: now-playing artwork rendering (copy to clipboard).
+- `View/MenuBarLabelView.swift`: menu bar icon + dynamic text label.
 
 ## Build & Run
 
