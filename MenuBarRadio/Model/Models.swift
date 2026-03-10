@@ -10,6 +10,7 @@ struct RadioStation: Identifiable, Codable, Equatable {
     var codec: String?
     var bitrate: Int?
     var votes: Int?
+    var tags: String?
 
     init(
         id: UUID = UUID(),
@@ -19,7 +20,8 @@ struct RadioStation: Identifiable, Codable, Equatable {
         isFavorite: Bool = false,
         codec: String? = nil,
         bitrate: Int? = nil,
-        votes: Int? = nil
+        votes: Int? = nil,
+        tags: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -29,6 +31,7 @@ struct RadioStation: Identifiable, Codable, Equatable {
         self.codec = codec
         self.bitrate = bitrate
         self.votes = votes
+        self.tags = tags
     }
 }
 

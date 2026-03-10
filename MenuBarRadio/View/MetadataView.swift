@@ -5,6 +5,9 @@ struct MetadataView: View {
     @EnvironmentObject private var player: RadioPlayer
 
     var body: some View {
+        
+        let extraLines = player.nowPlaying.extra.sorted(by: { $0.key < $1.key }).map { "\($0.key): \($0.value)" }
+        
         HStack(alignment: .top, spacing: 12) {
             ArtworkView(metadata: player.nowPlaying)
             VStack(alignment: .leading, spacing: 4) {
@@ -54,8 +57,15 @@ struct MetadataView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                if let tags = player.currentStation?.tags, !tags.isEmpty {
+                    Text("Tags: \(tags)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+//                        .lineLimit(5)
+                }
             }
             .textSelection(.enabled)
+            .help(extraLines.joined(separator: "\n"))
             Spacer(minLength: 0)
         }
     }
