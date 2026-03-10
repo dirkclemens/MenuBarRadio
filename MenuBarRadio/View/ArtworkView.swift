@@ -2,6 +2,7 @@ import SwiftUI
 
 /// Artwork renderer with placeholder and clipboard copy action.
 struct ArtworkView: View {
+    @EnvironmentObject private var player: RadioPlayer
     let metadata: NowPlayingMetadata
 
     var body: some View {
@@ -23,6 +24,9 @@ struct ArtworkView: View {
         }
         .frame(width: 160, height: 160)
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .onTapGesture {
+            ArtworkPopupWindowController.shared.show(with: player)
+        }
         .contextMenu {
             Button("Copy Artwork") {
                 Task {

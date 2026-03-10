@@ -4,6 +4,7 @@ import Foundation
 struct TrackEnrichmentResult: Codable {
     let artist: String
     let title: String
+    let album: String?
     let year: String?
     let releaseDate: String?
     let artworkURL: URL?
@@ -49,6 +50,7 @@ actor MusicMetadataEnrichmentService {
                 result = TrackEnrichmentResult(
                     artist: result.artist,
                     title: result.title,
+                    album: result.album ?? iTunesResult?.album,
                     year: result.year ?? iTunesResult?.year,
                     releaseDate: result.releaseDate ?? iTunesResult?.releaseDate,
                     artworkURL: iTunesArtwork,
@@ -108,6 +110,7 @@ actor MusicMetadataEnrichmentService {
             return TrackEnrichmentResult(
                 artist: artist,
                 title: title,
+                album: best.recording.primaryReleaseTitle ?? best.recording.primaryReleaseGroupTitle,
                 year: Self.yearFromDate(date),
                 releaseDate: date,
                 artworkURL: artwork,
@@ -151,6 +154,7 @@ actor MusicMetadataEnrichmentService {
                 return TrackEnrichmentResult(
                     artist: artist,
                     title: title,
+                    album: track.collectionName,
                     year: Self.yearFromDate(track.releaseDate),
                     releaseDate: track.releaseDate,
                     artworkURL: track.bestArtworkURL,
@@ -304,6 +308,7 @@ nonisolated private struct MusicBrainzRecording: Decodable {
     let firstReleaseDate: String?
     let artistCredit: [MusicBrainzArtistCredit]
     let releases: [MusicBrainzRelease]?
+    let releaseGroups: [MusicBrainzReleaseGroup]?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -312,6 +317,15 @@ nonisolated private struct MusicBrainzRecording: Decodable {
         case firstReleaseDate = "first-release-date"
         case artistCredit = "artist-credit"
         case releases
+        case releaseGroups = "release-groups"
+    }
+
+    var primaryReleaseTitle: String? {
+        releases?.first?.title
+    }
+
+    var primaryReleaseGroupTitle: String? {
+        releaseGroups?.first?.title
     }
 }
 
@@ -321,6 +335,11 @@ nonisolated private struct MusicBrainzArtistCredit: Decodable {
 
 nonisolated private struct MusicBrainzRelease: Decodable {
     let id: String
+    let title: String?
+}
+
+nonisolated private struct MusicBrainzReleaseGroup: Decodable {
+    let title: String?
 }
 
 nonisolated private struct MusicBrainzRecordingLookupResponse: Decodable {
@@ -334,6 +353,7 @@ nonisolated private struct ITunesResponse: Decodable {
 nonisolated private struct ITunesTrack: Decodable {
     let artistName: String
     let trackName: String
+    let collectionName: String?
     let releaseDate: String?
     let artworkUrl100: String?
 

@@ -494,6 +494,9 @@ final class RadioPlayer: NSObject, ObservableObject {
                 guard current == fingerprint else { return }
 
                 var updated = self.nowPlaying
+                if updated.album == nil || updated.album?.isEmpty == true {
+                    updated.album = result.album
+                }
                 if updated.year == nil || updated.year?.isEmpty == true {
                     updated.year = result.year
                 }
