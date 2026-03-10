@@ -3,6 +3,7 @@ import AppKit
 import Combine
 import Foundation
 
+/// Core playback engine: stream control, metadata parsing, and settings persistence.
 @MainActor
 final class RadioPlayer: NSObject, ObservableObject {
     @Published private(set) var isPlaying = false
@@ -65,6 +66,7 @@ final class RadioPlayer: NSObject, ObservableObject {
         metadataEnrichmentTask?.cancel()
     }
 
+    /// Builds the menu bar label based on current metadata and settings.
     var menuBarLabel: String {
         var parts: [String] = []
         if menuBarDisplay.showArtist, let artist = nowPlaying.artist, !artist.isEmpty {
@@ -91,6 +93,7 @@ final class RadioPlayer: NSObject, ObservableObject {
         return text
     }
 
+    /// Builds the tooltip text with richer metadata details.
     var menuBarTooltip: String {
         var lines: [String] = []
         if let stationName = currentStation?.name {
@@ -140,6 +143,7 @@ final class RadioPlayer: NSObject, ObservableObject {
         metadataTask = nil
     }
 
+    /// Switches the player to a given station and optionally starts playback.
     func selectStation(id: UUID, autoPlay: Bool? = nil) {
         guard let station = stations.first(where: { $0.id == id }) else { return }
         currentStation = station
@@ -202,6 +206,7 @@ final class RadioPlayer: NSObject, ObservableObject {
         handleDeletedStationIDs([id])
     }
 
+    /// Replaces the full station list while keeping a valid selection if possible.
     func replaceStations(with newStations: [RadioStation]) {
         stations = newStations
 
@@ -229,6 +234,7 @@ final class RadioPlayer: NSObject, ObservableObject {
         }
     }
 
+    /// Polls provider metadata endpoints when configured for a station.
     private func startMetadataPollingIfNeeded() {
         metadataTask?.cancel()
         guard
@@ -247,6 +253,7 @@ final class RadioPlayer: NSObject, ObservableObject {
         }
     }
 
+    /// Creates an AVPlayerItem with stream-friendly HTTP headers and buffering.
     private func makePlayerItem(for url: URL) -> AVPlayerItem {
         let headers = [
             "User-Agent": "MenuBarRadio/1.0",
@@ -265,6 +272,7 @@ final class RadioPlayer: NSObject, ObservableObject {
         return item
     }
 
+    /// Ensures current station/playback remains valid after deletions.
     private func handleDeletedStationIDs(_ ids: [UUID]) {
         if let currentID = currentStation?.id, ids.contains(currentID) {
             currentStation = nil
@@ -276,6 +284,7 @@ final class RadioPlayer: NSObject, ObservableObject {
         }
     }
 
+    /// Fetches station-specific metadata from a configured provider endpoint.
     private func fetchProviderMetadata(from url: URL) async {
         guard isPlaying else { return }
         do {
@@ -288,6 +297,7 @@ final class RadioPlayer: NSObject, ObservableObject {
         }
     }
 
+    /// Normalizes provider metadata and merges it into now-playing state.
     private func mergeProviderValues(_ values: [String: String]) {
         var updated = nowPlaying
         let oldFingerprint = TrackFingerprint(metadata: nowPlaying)
@@ -346,6 +356,7 @@ final class RadioPlayer: NSObject, ObservableObject {
         nowPlaying = updated
     }
 
+    /// Flattens nested JSON dictionaries into a string map for easy lookup.
     private func flatten(json: [String: Any], prefix: String = "") -> [String: String] {
         var result: [String: String] = [:]
         for (key, value) in json {
@@ -371,6 +382,7 @@ final class RadioPlayer: NSObject, ObservableObject {
         return nil
     }
 
+    /// Parses timed metadata (ICY/ID3/common keys) from the stream.
     private func updateFromTimedMetadata(item: AVMetadataItem) {
         var updated = nowPlaying
         let oldFingerprint = TrackFingerprint(metadata: nowPlaying)
@@ -432,6 +444,7 @@ final class RadioPlayer: NSObject, ObservableObject {
         nowPlaying = updated
     }
 
+    /// Extracts artist/title from ICY StreamTitle patterns.
     private func parseICYTitle(_ raw: String, into metadata: inout NowPlayingMetadata) {
         let marker = "StreamTitle='"
         guard let start = raw.range(of: marker)?.upperBound else { return }
@@ -461,6 +474,7 @@ final class RadioPlayer: NSObject, ObservableObject {
         )
     }
 
+    /// Debounced enrichment lookup for the current track (year/artwork).
     private func scheduleEnrichment(for fingerprint: TrackFingerprint?) {
         metadataEnrichmentTask?.cancel()
         guard let fingerprint else { return }
@@ -500,6 +514,7 @@ final class RadioPlayer: NSObject, ObservableObject {
         }
     }
 
+    /// Clears per-track fields when a new song is detected.
     private func resetStaleMetadata(for metadata: inout NowPlayingMetadata) {
         metadata.artworkURL = nil
         metadata.year = nil
@@ -512,6 +527,7 @@ final class RadioPlayer: NSObject, ObservableObject {
     }
 }
 
+/// Normalized identity for track-change detection and caching.
 private struct TrackFingerprint: Equatable {
     let artist: String
     let title: String

@@ -1,6 +1,8 @@
 import Foundation
 
+/// Release date helpers for localized display and year extraction.
 extension NowPlayingMetadata {
+    /// Returns a localized release date string when present.
     func formattedReleaseDate() -> String? {
         guard let raw = extra["release_date"]?.trimmingCharacters(in: .whitespacesAndNewlines),
               !raw.isEmpty
@@ -12,6 +14,7 @@ extension NowPlayingMetadata {
         return raw
     }
 
+    /// Returns a release year derived from release_date, falling back to year.
     var releaseYear: String? {
         if let raw = extra["release_date"]?.trimmingCharacters(in: .whitespacesAndNewlines),
            !raw.isEmpty,

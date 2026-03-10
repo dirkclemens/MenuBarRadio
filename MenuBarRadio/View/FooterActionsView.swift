@@ -1,5 +1,6 @@
 import SwiftUI
 
+/// Footer actions row (settings + quit).
 struct FooterActionsView: View {
     var body: some View {
         HStack {

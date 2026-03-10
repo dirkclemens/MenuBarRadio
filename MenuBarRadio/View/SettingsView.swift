@@ -2,12 +2,14 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// Settings window with stations, directory search, and display options.
 struct SettingsView: View {
     @EnvironmentObject private var player: RadioPlayer
     @StateObject private var directory: RadioDirectoryController
     @State private var selectedStationID: UUID?
     @State private var importErrorMessage: String?
     @State private var isShowingImporter = false
+    @State private var wasPlayingBeforePreview = false
 
     init() {
         _directory = StateObject(wrappedValue: RadioDirectoryController(provider: RadioBrowserDirectoryProvider()))
@@ -32,9 +34,13 @@ struct SettingsView: View {
         .frame(minWidth: 720, minHeight: 480)
         .onAppear {
             selectedStationID = player.currentStation?.id ?? player.stations.first?.id
+            directory.previewVolume = player.volume
             if directory.results.isEmpty {
                 Task { await directory.search() }
             }
+        }
+        .onChange(of: player.volume) { _, newValue in
+            directory.previewVolume = newValue
         }
         .alert("Import Failed", isPresented: Binding(
             get: { importErrorMessage != nil },
@@ -147,7 +153,7 @@ struct SettingsView: View {
             Section("Menu Bar Label") {
                 Toggle("Show Artist", isOn: $player.menuBarDisplay.showArtist)
                 Toggle("Show Song Title", isOn: $player.menuBarDisplay.showTitle)
-                Toggle("Show Year", isOn: $player.menuBarDisplay.showYear)
+                Toggle("Show Release Date (Year)", isOn: $player.menuBarDisplay.showYear)
                 Toggle("Fallback to Station Name if metadata is missing", isOn: $player.menuBarDisplay.showStationNameFallback)
                 Stepper(value: $player.menuBarDisplay.maxLength, in: 12...80) {
                     Text("Maximum Label Length: \(player.menuBarDisplay.maxLength)")
@@ -193,8 +199,11 @@ struct SettingsView: View {
                 TextField("Tag (optional)", text: $directory.queryTag)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 180)
-                Button("Search") {
+                Button() {
                     Task { await directory.search() }
+                } label: {
+                    Text("Search")
+                    Image(systemName: "magnifyingglass.circle")
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(directory.isSearching)
@@ -217,15 +226,47 @@ struct SettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
+                        if let streamURL = station.preferredStreamURL {
+                            HStack(spacing: 6) {
+                                Link(streamURL.absoluteString, destination: streamURL)
+                                    .font(.caption2)
+                                    .foregroundStyle(.blue)
+                                    .lineLimit(1)
+                                Button {
+                                    let pasteboard = NSPasteboard.general
+                                    pasteboard.clearContents()
+                                    pasteboard.setString(streamURL.absoluteString, forType: .string)
+                                } label: {
+                                    Image(systemName: "doc.on.doc")
+                                }
+                                .buttonStyle(.plain)
+                                .help("Copy URL")
+                            }
+                        }
                     }
+                    .textSelection(.enabled)
+                    Spacer(minLength: 0)
                     Spacer()
-                    Button(directory.previewingStationID == station.id ? "Stop" : "Pre-Listen") {
-                        directory.togglePreview(for: station)
+                    Button() {//directory.previewingStationID == station.id ? "Stop" : "Pre-Listen") {
+                        if directory.previewingStationID == station.id {
+                            directory.togglePreview(for: station)
+                            if wasPlayingBeforePreview {
+                                player.play()
+                            }
+                        } else {
+                            wasPlayingBeforePreview = player.isPlaying
+                            player.pause()
+                            directory.togglePreview(for: station)
+                        }
+                    } label: {
+                        Image(systemName: directory.previewingStationID == station.id ? "stop.circle" :"play.circle")
                     }
                     .disabled(station.preferredStreamURL == nil)
 
-                    Button(isStationAlreadyAdded(station) ? "Added" : "Add") {
+                    Button() {//isStationAlreadyAdded(station)} ? "Added" : "Add") {
                         addDirectoryStation(station)
+                    } label: {
+                        Image(systemName: "plus.circle")
                     }
                     .disabled(isStationAlreadyAdded(station) || station.preferredStreamURL == nil)
                 }
@@ -242,6 +283,7 @@ struct SettingsView: View {
         )
     }
 
+    /// Imports stations from a JSON file.
     private func handleImportResult(_ result: Result<[URL], Error>) {
         do {
             let urls = try result.get()
@@ -262,6 +304,7 @@ struct SettingsView: View {
         }
     }
 
+    /// Exports all stations to a JSON file chosen by the user.
     private func exportStations() {
         let savePanel = NSSavePanel()
         savePanel.allowedContentTypes = [.json]
@@ -282,6 +325,7 @@ struct SettingsView: View {
         }
     }
 
+    /// Formats a compact description for directory results.
     private func detailLine(for station: RadioDirectoryStation) -> String {
         let countryPart = station.country.isEmpty ? station.countryCode : station.country
         let codecPart = station.codec.isEmpty ? "n/a" : station.codec.uppercased()
@@ -290,11 +334,13 @@ struct SettingsView: View {
         return "\(countryPart) • \(station.language) • \(codecPart) • \(bitratePart) • \(votesPart)"
     }
 
+    /// Prevents duplicates by matching stream URLs.
     private func isStationAlreadyAdded(_ directoryStation: RadioDirectoryStation) -> Bool {
         guard let url = directoryStation.preferredStreamURL?.absoluteString else { return false }
         return player.stations.contains { $0.streamURL.caseInsensitiveCompare(url) == .orderedSame }
     }
 
+    /// Adds a directory result into the user's station list.
     private func addDirectoryStation(_ directoryStation: RadioDirectoryStation) {
         guard let url = directoryStation.preferredStreamURL?.absoluteString else { return }
         guard !isStationAlreadyAdded(directoryStation) else { return }
@@ -303,23 +349,29 @@ struct SettingsView: View {
             name: directoryStation.name,
             streamURL: url,
             metadataURL: nil,
-            isFavorite: false
+            isFavorite: false,
+            codec: directoryStation.codec.isEmpty ? nil : directoryStation.codec,
+            bitrate: directoryStation.bitrate,
+            votes: directoryStation.votes
         )
         player.appendStation(station)
         selectedStationID = station.id
     }
 }
 
+/// JSON import payload wrapper.
 private struct ImportPayload: Codable {
     let stations: [RadioStation]
 }
 
+/// JSON export payload wrapper.
 private struct ExportPayload: Codable {
     let version: Int
     let exportedAt: Date
     let stations: [RadioStation]
 }
 
+/// Editor form for a single station entry.
 private struct StationEditor: View {
     @Binding var station: RadioStation
     let onSave: (RadioStation) -> Void

@@ -1,5 +1,6 @@
 import SwiftUI
 
+/// Volume slider row for the current player.
 struct VolumeView: View {
     @EnvironmentObject private var player: RadioPlayer
 

@@ -2,14 +2,31 @@ import AVFoundation
 import Combine
 import Foundation
 
+/// Search parameters for directory providers.
 struct RadioDirectorySearchQuery {
-    var text: String = ""
-    var countryCode: String = ""
+    var text: String = ""        
+    var countryCode: String = "" // https://en.wikipedia.org/wiki/ISO_3166-1_alpha-2
     var tag: String = ""
     var limit: Int = 40
     var hideBroken: Bool = true
 }
 
+/// Normalized directory station result.
+/* example response from Radio Browser API:
+{
+  "changeuuid": "4f7e4097-4354-11e8-b74d-52543be04c81",
+  "stationuuid": "96062a7b-0601-11e8-ae97-52543be04c81",
+  "name": "BBC Radio 1",
+  "url": "http://bbcmedia.ic.llnwd.net/stream/bbcmedia_radio1_mf_p",
+  "homepage": "http://www.bbc.co.uk/radio1/",
+  "tags": "bbc,indie,entertainment,music,rock,pop",
+  "country": "United Kingdom",
+  "countrycode": "GB",
+  "language": "english",
+  "codec": "MP3",
+  "bitrate": 128
+}
+*/
 struct RadioDirectoryStation: Identifiable, Hashable {
     var id: String { stationUUID }
     let stationUUID: String
@@ -20,7 +37,7 @@ struct RadioDirectoryStation: Identifiable, Hashable {
     let faviconURL: URL?
     let tags: String
     let country: String
-    let countryCode: String
+    let countryCode: String // https://en.wikipedia.org/wiki/ISO_3166-1_alpha-2
     let language: String
     let codec: String
     let bitrate: Int?
@@ -35,12 +52,14 @@ struct RadioDirectoryStation: Identifiable, Hashable {
     }
 }
 
+/// Provider interface for station search services.
 protocol RadioDirectoryProvider {
     var id: String { get }
     var displayName: String { get }
     func searchStations(query: RadioDirectorySearchQuery) async throws -> [RadioDirectoryStation]
 }
 
+/// Provider error types for user-facing feedback.
 enum RadioDirectoryError: LocalizedError {
     case invalidRequest
     case invalidResponse
@@ -55,12 +74,14 @@ enum RadioDirectoryError: LocalizedError {
     }
 }
 
+/// Radio Browser provider implementation.
 struct RadioBrowserDirectoryProvider: RadioDirectoryProvider {
     let id = "radio-browser"
     let displayName = "Radio Browser"
     private let baseURL = URL(string: "https://de1.api.radio-browser.info")!
     private let userAgent = "MenuBarRadio/1.0"
 
+    /// Searches stations via Radio Browser JSON API.
     func searchStations(query: RadioDirectorySearchQuery) async throws -> [RadioDirectoryStation] {
         let request = try makeRequest(query: query)
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -93,6 +114,7 @@ struct RadioBrowserDirectoryProvider: RadioDirectoryProvider {
         }
     }
 
+    /// Builds the Radio Browser query URL for name/tag/country.
     private func makeRequest(query: RadioDirectorySearchQuery) throws -> URLRequest {
         let text = query.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let limit = max(1, min(query.limit, 100))
@@ -138,6 +160,7 @@ struct RadioBrowserDirectoryProvider: RadioDirectoryProvider {
     }
 }
 
+/// View model for directory search + preview playback.
 @MainActor
 final class RadioDirectoryController: ObservableObject {
     @Published var queryText = ""
@@ -147,6 +170,9 @@ final class RadioDirectoryController: ObservableObject {
     @Published var results: [RadioDirectoryStation] = []
     @Published var errorMessage: String?
     @Published var previewingStationID: String?
+    @Published var previewVolume: Float = 0.8 {
+        didSet { previewPlayer.volume = previewVolume }
+    }
 
     let providerName: String
 
@@ -157,10 +183,10 @@ final class RadioDirectoryController: ObservableObject {
     init(provider: any RadioDirectoryProvider) {
         self.provider = provider
         self.providerName = provider.displayName
-        previewPlayer.volume = 0.8
-        previewPlayer.automaticallyWaitsToMinimizeStalling = false
+        previewPlayer.volume = previewVolume
     }
 
+    /// Executes a search with the current query fields.
     func search() async {
         isSearching = true
         errorMessage = nil
@@ -179,6 +205,7 @@ final class RadioDirectoryController: ObservableObject {
         }
     }
 
+    /// Starts/stops pre-listen playback for a station.
     func togglePreview(for station: RadioDirectoryStation) {
         if previewingStationID == station.id {
             stopPreview()
@@ -202,10 +229,22 @@ final class RadioDirectoryController: ObservableObject {
             }
         }
         previewPlayer.replaceCurrentItem(with: item)
-        previewPlayer.play()
+        previewPlayer.isMuted = false
+        previewPlayer.volume = previewVolume
+        previewPlayer.playImmediately(atRate: 1.0)
         previewingStationID = station.id
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard self.previewingStationID == station.id else { return }
+            if self.previewPlayer.timeControlStatus != .playing {
+                self.errorMessage = "Preview stalled: stream may be unavailable."
+            }
+        }
     }
 
+    /// Stops any active preview playback.
     func stopPreview() {
         previewPlayer.pause()
         previewPlayer.replaceCurrentItem(with: nil)
@@ -214,6 +253,7 @@ final class RadioDirectoryController: ObservableObject {
         previewStatusObserver = nil
     }
 
+    /// Builds a preview item with stream-friendly headers.
     private func makePreviewItem(for url: URL) -> AVPlayerItem {
         let headers = [
             "User-Agent": "MenuBarRadio/1.0",

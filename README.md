@@ -24,6 +24,7 @@ MenuBarRadio is a macOS SwiftUI "MenuBarExtra" app for streaming web radio with 
   - title
   - year (when available)
   - release date (localized)
+  - bitrate / codec / votes (from directory metadata when available)
   - artwork image (when available)
 - Configurable menu bar label:
   - show/hide artist

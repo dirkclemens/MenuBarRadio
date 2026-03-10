@@ -1,27 +1,38 @@
 import Foundation
 
+/// A user-configured radio station entry.
 struct RadioStation: Identifiable, Codable, Equatable {
     var id: UUID
     var name: String
     var streamURL: String
     var metadataURL: String?
     var isFavorite: Bool
+    var codec: String?
+    var bitrate: Int?
+    var votes: Int?
 
     init(
         id: UUID = UUID(),
         name: String,
         streamURL: String,
         metadataURL: String? = nil,
-        isFavorite: Bool = false
+        isFavorite: Bool = false,
+        codec: String? = nil,
+        bitrate: Int? = nil,
+        votes: Int? = nil
     ) {
         self.id = id
         self.name = name
         self.streamURL = streamURL
         self.metadataURL = metadataURL
         self.isFavorite = isFavorite
+        self.codec = codec
+        self.bitrate = bitrate
+        self.votes = votes
     }
 }
 
+/// Live now-playing metadata derived from streams and enrichment services.
 struct NowPlayingMetadata: Codable, Equatable {
     var artist: String?
     var title: String?
@@ -47,6 +58,7 @@ struct NowPlayingMetadata: Codable, Equatable {
     }
 }
 
+/// Controls which fields appear in the menu bar label.
 struct MenuBarDisplayConfiguration: Codable, Equatable {
     var showArtist: Bool = true
     var showTitle: Bool = true
@@ -55,6 +67,8 @@ struct MenuBarDisplayConfiguration: Codable, Equatable {
     var maxLength: Int = 36
 }
 
+
+/// Persisted app settings stored in UserDefaults.
 struct AppSettings: Codable {
     var stations: [RadioStation]
     var selectedStationID: UUID?

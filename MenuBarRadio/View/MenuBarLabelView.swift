@@ -1,5 +1,6 @@
 import SwiftUI
 
+/// Menu bar label showing current playback state and metadata snippet.
 struct MenuBarLabelView: View {
     @EnvironmentObject private var player: RadioPlayer
 

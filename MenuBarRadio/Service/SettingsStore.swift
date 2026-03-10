@@ -1,5 +1,6 @@
 import Foundation
 
+/// Simple JSON persistence wrapper around UserDefaults for app settings.
 final class SettingsStore {
     private let key = "MenuBarRadio.AppSettings"
 

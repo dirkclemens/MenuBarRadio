@@ -1,5 +1,6 @@
 import SwiftUI
 
+/// Artwork renderer with placeholder and clipboard copy action.
 struct ArtworkView: View {
     let metadata: NowPlayingMetadata
 
@@ -41,6 +42,7 @@ struct ArtworkView: View {
         }
     }
 
+    /// Copies the current artwork into the system clipboard.
     private func copyArtworkToClipboard() async {
         guard let artworkURL = metadata.artworkURL else { return }
 
@@ -54,6 +56,7 @@ struct ArtworkView: View {
         }
     }
 
+    /// Loads artwork via URLSession to avoid blocking the main thread.
     private func loadImage(from url: URL) async -> NSImage? {
         do {
             let (data, _) = try await URLSession.shared.data(from: url)

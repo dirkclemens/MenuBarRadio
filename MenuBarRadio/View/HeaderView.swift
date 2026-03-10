@@ -1,5 +1,6 @@
 import SwiftUI
 
+/// Station picker and play/pause control row.
 struct HeaderView: View {
     @EnvironmentObject private var player: RadioPlayer
 

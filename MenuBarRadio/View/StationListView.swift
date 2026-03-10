@@ -1,5 +1,6 @@
 import SwiftUI
 
+/// Scrollable list of stations with quick play/favorite actions.
 struct StationListView: View {
     @EnvironmentObject private var player: RadioPlayer
 

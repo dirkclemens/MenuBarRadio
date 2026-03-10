@@ -1,5 +1,6 @@
 import SwiftUI
 
+/// Now-playing metadata panel (title/artist/release/etc).
 struct MetadataView: View {
     @EnvironmentObject private var player: RadioPlayer
 
@@ -19,7 +20,7 @@ struct MetadataView: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-
+                
                 if let releaseDate = player.nowPlaying.formattedReleaseDate() {
                     Text("Release: \(releaseDate)")
                         .font(.caption)
@@ -28,6 +29,24 @@ struct MetadataView: View {
                     Text("Year: \(year)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+                
+                HStack(spacing: 10) {
+                    if let bitrate = player.currentStation?.bitrate {
+                        Text("Bitrate: \(bitrate) kbps")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let codec = player.currentStation?.codec, !codec.isEmpty {
+                        Text("Codec: \(codec)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let votes = player.currentStation?.votes {
+                        Text("Votes: \(votes)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 if let station = player.currentStation {

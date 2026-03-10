@@ -1,5 +1,6 @@
 import Foundation
 
+/// Enriched track metadata used to augment now-playing information.
 struct TrackEnrichmentResult: Codable {
     let artist: String
     let title: String
@@ -10,6 +11,7 @@ struct TrackEnrichmentResult: Codable {
     let source: String
 }
 
+/// Fetches release year and artwork from free, no-key services with caching.
 actor MusicMetadataEnrichmentService {
     private struct CachedValue: Codable {
         let result: TrackEnrichmentResult
@@ -28,6 +30,7 @@ actor MusicMetadataEnrichmentService {
         self.cache = Self.loadCache(forKey: storageKey)
     }
 
+    /// Performs a debounced, cached lookup for the given artist/title.
     func enrich(artist: String, title: String) async -> TrackEnrichmentResult? {
         let normalizedArtist = normalize(artist)
         let normalizedTitle = normalize(title)
@@ -67,6 +70,7 @@ actor MusicMetadataEnrichmentService {
         return nil
     }
 
+    /// Queries MusicBrainz recordings and optionally resolves cover art.
     private func queryMusicBrainz(artist: String, title: String) async -> TrackEnrichmentResult? {
         let queryString = "recording:\"\(title)\" AND artist:\"\(artist)\""
         guard var components = URLComponents(string: "https://musicbrainz.org/ws/2/recording/") else { return nil }
@@ -115,6 +119,7 @@ actor MusicMetadataEnrichmentService {
         }
     }
 
+    /// Queries iTunes Search for release date and artwork.
     private func queryITunes(artist: String, title: String) async -> TrackEnrichmentResult? {
         guard var components = URLComponents(string: "https://itunes.apple.com/search") else { return nil }
         components.queryItems = [
@@ -160,6 +165,7 @@ actor MusicMetadataEnrichmentService {
         }
     }
 
+    /// Attempts to resolve Cover Art Archive artwork for a recording.
     private func fetchMusicBrainzArtwork(for recording: MusicBrainzRecording) async -> URL? {
         if let releaseID = recording.releases?.compactMap(\.id).first,
            let coverURL = await fetchCoverArtArchiveURL(releaseID: releaseID) {
@@ -186,6 +192,7 @@ actor MusicMetadataEnrichmentService {
         return nil
     }
 
+    /// Resolves a release ID into a cover art URL.
     private func fetchCoverArtArchiveURL(releaseID: String) async -> URL? {
         guard let url = URL(string: "https://coverartarchive.org/release/\(releaseID)") else { return nil }
         do {
@@ -205,6 +212,7 @@ actor MusicMetadataEnrichmentService {
         return nil
     }
 
+    /// Enforces ~1 request/second for free API compliance.
     private func throttleRequests() async throws {
         if let lastRequestAt {
             let delta = Date().timeIntervalSince(lastRequestAt)
@@ -216,6 +224,7 @@ actor MusicMetadataEnrichmentService {
         lastRequestAt = Date()
     }
 
+    /// Combines provider score with fuzzy artist/title similarity.
     private func scoreCandidate(
         candidateArtist: String,
         candidateTitle: String,
@@ -229,6 +238,7 @@ actor MusicMetadataEnrichmentService {
         return min(1, (titleScore * 0.5) + (artistScore * 0.35) + (provider * 0.15))
     }
 
+    /// Simple token overlap similarity for matching candidates.
     private func similarity(_ lhs: String, _ rhs: String) -> Double {
         let a = normalize(lhs)
         let b = normalize(rhs)
@@ -244,6 +254,7 @@ actor MusicMetadataEnrichmentService {
         return Double(intersect) / Double(maxCount)
     }
 
+    /// Normalizes strings for fuzzy matching (case/diacritic/punctuation).
     private func normalize(_ value: String) -> String {
         value
             .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
