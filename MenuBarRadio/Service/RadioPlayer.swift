@@ -73,13 +73,13 @@ final class RadioPlayer: NSObject, ObservableObject {
         if menuBarDisplay.showTitle, let title = nowPlaying.title, !title.isEmpty {
             parts.append(title)
         }
-        if menuBarDisplay.showYear, let year = nowPlaying.year, !year.isEmpty {
+        if menuBarDisplay.showYear, let year = nowPlaying.releaseYear ?? nowPlaying.year, !year.isEmpty {
             parts.append(year)
         }
-
+        
         var text: String
         if parts.isEmpty {
-            text = menuBarDisplay.showStationNameFallback ? (currentStation?.name ?? "Radio") : "Radio"
+            text = menuBarDisplay.showStationNameFallback ? (currentStation?.name ?? "") : "" // "Radio"
         } else {
             text = parts.joined(separator: " • ")
         }
@@ -290,6 +290,8 @@ final class RadioPlayer: NSObject, ObservableObject {
 
     private func mergeProviderValues(_ values: [String: String]) {
         var updated = nowPlaying
+        let oldFingerprint = TrackFingerprint(metadata: nowPlaying)
+        var trackIdentityUpdated = false
         let candidateArtist = firstMatch(values, keys: ["artist", "now_playing.song.artist", "song.artist", "current.artist"])
         let candidateTitle = firstMatch(values, keys: ["title", "song", "track", "now_playing.song.title", "song.title", "current.title", "text"])
         let candidateAlbum = firstMatch(values, keys: ["album", "release", "song.album"])
@@ -298,6 +300,7 @@ final class RadioPlayer: NSObject, ObservableObject {
 
         if let candidateArtist {
             updated.artist = candidateArtist
+            trackIdentityUpdated = true
         }
         if let candidateTitle {
             if updated.artist == nil, candidateTitle.contains(" - ") {
@@ -305,13 +308,24 @@ final class RadioPlayer: NSObject, ObservableObject {
                 if parts.count == 2 {
                     updated.artist = parts[0]
                     updated.title = parts[1]
+                    trackIdentityUpdated = true
                 } else {
                     updated.title = candidateTitle
+                    trackIdentityUpdated = true
                 }
             } else {
                 updated.title = candidateTitle
+                trackIdentityUpdated = true
             }
         }
+
+        if trackIdentityUpdated {
+            let newFingerprint = TrackFingerprint(metadata: updated)
+            if newFingerprint != oldFingerprint {
+                resetStaleMetadata(for: &updated)
+            }
+        }
+
         if let candidateAlbum {
             updated.album = candidateAlbum
         }
@@ -359,6 +373,8 @@ final class RadioPlayer: NSObject, ObservableObject {
 
     private func updateFromTimedMetadata(item: AVMetadataItem) {
         var updated = nowPlaying
+        let oldFingerprint = TrackFingerprint(metadata: nowPlaying)
+        var trackIdentityUpdated = false
 
         let stringValue = item.stringValue ?? item.value as? String
         if let stringValue {
@@ -368,19 +384,24 @@ final class RadioPlayer: NSObject, ObservableObject {
             case "title":
                 if stringValue.contains("StreamTitle='") {
                     parseICYTitle(stringValue, into: &updated)
+                    trackIdentityUpdated = true
                 } else if stringValue.contains(" - ") {
                     let parts = stringValue.split(separator: "-", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
                     if parts.count == 2 {
                         updated.artist = parts[0]
                         updated.title = parts[1]
+                        trackIdentityUpdated = true
                     } else {
                         updated.title = stringValue
+                        trackIdentityUpdated = true
                     }
                 } else {
                     updated.title = stringValue
+                    trackIdentityUpdated = true
                 }
             case "artist":
                 updated.artist = stringValue
+                trackIdentityUpdated = true
             case "albumname", "album":
                 updated.album = stringValue
             case "year":
@@ -388,9 +409,17 @@ final class RadioPlayer: NSObject, ObservableObject {
             default:
                 if stringValue.contains("StreamTitle='") {
                     parseICYTitle(stringValue, into: &updated)
+                    trackIdentityUpdated = true
                 } else {
                     updated.extra[normalizedKey] = stringValue
                 }
+            }
+        }
+
+        if trackIdentityUpdated {
+            let newFingerprint = TrackFingerprint(metadata: updated)
+            if newFingerprint != oldFingerprint {
+                resetStaleMetadata(for: &updated)
             }
         }
 
@@ -469,6 +498,17 @@ final class RadioPlayer: NSObject, ObservableObject {
                 self.nowPlaying = updated
             }
         }
+    }
+
+    private func resetStaleMetadata(for metadata: inout NowPlayingMetadata) {
+        metadata.artworkURL = nil
+        metadata.year = nil
+        metadata.album = nil
+        metadata.extra.removeValue(forKey: "release_date")
+        metadata.extra.removeValue(forKey: "artwork_source_url")
+        metadata.extra.removeValue(forKey: "enrichment_source")
+        metadata.extra.removeValue(forKey: "enrichment_confidence")
+        metadata.extra.removeValue(forKey: "enrichment_key")
     }
 }
 
