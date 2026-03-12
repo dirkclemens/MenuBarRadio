@@ -5,7 +5,7 @@ struct FooterActionsView: View {
     var body: some View {
         HStack {
             SettingsLink {
-                Image(systemName: "gearshape")
+                Image(systemName: "gear")
                     .font(.system(size: 12))
             }
             Spacer()

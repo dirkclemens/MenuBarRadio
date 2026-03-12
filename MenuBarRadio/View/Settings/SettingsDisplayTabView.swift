@@ -1,8 +1,10 @@
+import AppKit
 import SwiftUI
 
 /// Display and playback settings tab.
 struct SettingsDisplayTabView: View {
     @EnvironmentObject private var player: RadioPlayer
+    @StateObject private var deviceManager = AudioDeviceManager()
 
     var body: some View {
         Form {
@@ -17,6 +19,11 @@ struct SettingsDisplayTabView: View {
             }
             Section("Playback") {
                 Toggle("Auto-play last station on app launch", isOn: $player.autoPlayOnLaunch)
+                Toggle("Restore artwork popup on app launch", isOn: $player.restoreArtworkPopupOnLaunch)
+                Toggle("Show Dock icon", isOn: $player.showDockIcon)
+                    .onChange(of: player.showDockIcon) { _, newValue in
+                        NSApp.setActivationPolicy(newValue ? .regular : .accessory)
+                    }
                 HStack {
                     Text("Volume")
                     Slider(value: Binding(
@@ -24,8 +31,38 @@ struct SettingsDisplayTabView: View {
                         set: { player.volume = Float($0) }
                     ), in: 0...1)
                 }
-                Text("Audio output follows the default macOS output device.")
+                Text("Automatic output follows the system default device.")
                     .foregroundStyle(.secondary)
+            }
+            Section("Audio Output") {
+                HStack(){
+                    Picker("Output Device", selection: $player.selectedOutputDeviceID) {
+                        Text("Automatic (System Default)")
+                            .tag(UInt32(0))
+                        if player.selectedOutputDeviceID != 0,
+                           !deviceManager.isValidOutputDevice(id: player.selectedOutputDeviceID) {
+                            Text("Unavailable Device")
+                                .tag(player.selectedOutputDeviceID)
+                                .hidden()
+                        }
+                        ForEach(deviceManager.devices) { device in
+                            Text(device.name)
+                                .tag(UInt32(device.id))
+                        }
+                    }
+                    .onChange(of: player.selectedOutputDeviceID) { _, newValue in
+                        if newValue != 0 {
+                            _ = deviceManager.setDefaultOutputDevice(id: newValue)
+                            deviceManager.setDeviceVolume(id: newValue, volume: player.volume)
+                        }
+                    }
+                    Spacer()
+                    Button() {  // "Refresh Devices"
+                        deviceManager.refresh()
+                    } label: {
+                        Image(systemName: "arrow.clockwise.circle")
+                    }
+                }
             }
             Section("Metadata Polling") {
                 Stepper(value: $player.metadataRefreshSeconds, in: 5...60, step: 1) {
@@ -36,5 +73,18 @@ struct SettingsDisplayTabView: View {
             }
         }
         .formStyle(.grouped)
+        .onAppear {
+            deviceManager.refresh()
+            if player.selectedOutputDeviceID != 0,
+               !deviceManager.isValidOutputDevice(id: player.selectedOutputDeviceID) {
+                player.selectedOutputDeviceID = 0
+            }
+        }
+        .onChange(of: deviceManager.devices) { _, _ in
+            if player.selectedOutputDeviceID != 0,
+               !deviceManager.isValidOutputDevice(id: player.selectedOutputDeviceID) {
+                player.selectedOutputDeviceID = 0
+            }
+        }
     }
 }

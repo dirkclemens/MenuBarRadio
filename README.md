@@ -1,6 +1,7 @@
 # MenuBarRadio
 
 MenuBarRadio is a macOS SwiftUI "MenuBarExtra" app for streaming web radio with live now-playing metadata.
+Fully vibe coded / agentic coded using GPT-5.3-Codex
 
 ---
 
@@ -43,7 +44,9 @@ MenuBarRadio is a macOS SwiftUI "MenuBarExtra" app for streaming web radio with 
   - favorite stations
   - configure metadata refresh interval
 - Auto-play last station on app launch (optional).
+- Restore artwork popup window on app launch (optional).
 - Volume control (uses default macOS output device).
+- Output device selection (Automatic/system default or a specific device).
 - Right-click copy artwork to clipboard.
 - Text selection enabled in metadata panel for easy copy.
 
@@ -88,11 +91,11 @@ MenuBarRadio is a macOS SwiftUI "MenuBarExtra" app for streaming web radio with 
 - Validate and normalize stream URLs in settings.
 - Improve metadata provider mapping with per-station field mapping templates.
 - Add explicit error state in UI for unreachable streams.
-- Add output device selection.
+- Add per-app output routing (avoid changing system default).
+- React to system device changes (auto-refresh device list).
 - Add equalizer/band controls (bass/mid/treble).
 - Add keyboard shortcuts and media key support.
 - Add menu-bar-only launch option and optional dock icon behavior.
-- Add import/export of station presets (JSON/OPML).
 - Add unit tests:
   - metadata parsing
   - persistence

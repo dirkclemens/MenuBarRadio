@@ -79,6 +79,9 @@ struct AppSettings: Codable {
     var volume: Float
     var metadataRefreshSeconds: Double
     var autoPlayOnLaunch: Bool
+    var restoreArtworkPopupOnLaunch: Bool
+    var selectedOutputDeviceID: UInt32
+    var showDockIcon: Bool
 
     enum CodingKeys: String, CodingKey {
         case stations
@@ -87,6 +90,9 @@ struct AppSettings: Codable {
         case volume
         case metadataRefreshSeconds
         case autoPlayOnLaunch
+        case restoreArtworkPopupOnLaunch
+        case selectedOutputDeviceID
+        case showDockIcon
     }
 
     init(
@@ -95,7 +101,10 @@ struct AppSettings: Codable {
         menuBarDisplay: MenuBarDisplayConfiguration,
         volume: Float,
         metadataRefreshSeconds: Double,
-        autoPlayOnLaunch: Bool
+        autoPlayOnLaunch: Bool,
+        restoreArtworkPopupOnLaunch: Bool,
+        selectedOutputDeviceID: UInt32,
+        showDockIcon: Bool
     ) {
         self.stations = stations
         self.selectedStationID = selectedStationID
@@ -103,6 +112,9 @@ struct AppSettings: Codable {
         self.volume = volume
         self.metadataRefreshSeconds = metadataRefreshSeconds
         self.autoPlayOnLaunch = autoPlayOnLaunch
+        self.restoreArtworkPopupOnLaunch = restoreArtworkPopupOnLaunch
+        self.selectedOutputDeviceID = selectedOutputDeviceID
+        self.showDockIcon = showDockIcon
     }
 
     init(from decoder: Decoder) throws {
@@ -113,6 +125,9 @@ struct AppSettings: Codable {
         volume = try container.decode(Float.self, forKey: .volume)
         metadataRefreshSeconds = try container.decode(Double.self, forKey: .metadataRefreshSeconds)
         autoPlayOnLaunch = try container.decodeIfPresent(Bool.self, forKey: .autoPlayOnLaunch) ?? false
+        restoreArtworkPopupOnLaunch = try container.decodeIfPresent(Bool.self, forKey: .restoreArtworkPopupOnLaunch) ?? false
+        selectedOutputDeviceID = try container.decodeIfPresent(UInt32.self, forKey: .selectedOutputDeviceID) ?? 0
+        showDockIcon = try container.decodeIfPresent(Bool.self, forKey: .showDockIcon) ?? false
     }
 
     static let defaults = AppSettings(
@@ -125,6 +140,9 @@ struct AppSettings: Codable {
         menuBarDisplay: MenuBarDisplayConfiguration(),
         volume: 0.8,
         metadataRefreshSeconds: 15,
-        autoPlayOnLaunch: false
+        autoPlayOnLaunch: false,
+        restoreArtworkPopupOnLaunch: false,
+        selectedOutputDeviceID: 0,
+        showDockIcon: false
     )
 }

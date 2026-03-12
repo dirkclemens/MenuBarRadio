@@ -14,15 +14,15 @@ struct MetadataView: View {
                 Text(player.nowPlaying.title ?? "No title metadata")
                     .font(.headline)
                     .lineLimit(2)
+                Text(player.nowPlaying.artist ?? "Unknown artist")
+                    .font(.subheadline)
+                    .bold()
+                    .lineLimit(1)
                 if let album = player.nowPlaying.album, !album.isEmpty {
                     Text("Album: \(player.nowPlaying.album ?? "No album metadata")")
                         .font(.subheadline)
                         .lineLimit(2)
                 }
-                Text(player.nowPlaying.artist ?? "Unknown artist")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
                 
                 if let releaseDate = player.nowPlaying.formattedReleaseDate() {
                     Text("Release: \(releaseDate)")

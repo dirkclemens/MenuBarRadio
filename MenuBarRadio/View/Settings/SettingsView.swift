@@ -81,6 +81,19 @@ struct SettingsView: View {
         do {
             let urls = try result.get()
             guard let url = urls.first else { return }
+            let didStartAccess = url.startAccessingSecurityScopedResource()
+            defer {
+                if didStartAccess {
+                    url.stopAccessingSecurityScopedResource()
+                }
+            }
+            guard didStartAccess else {
+                throw NSError(
+                    domain: "MenuBarRadio.Import",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Missing security-scoped access for the selected file."]
+                )
+            }
             let data = try Data(contentsOf: url)
 
             let importedStations: [RadioStation]

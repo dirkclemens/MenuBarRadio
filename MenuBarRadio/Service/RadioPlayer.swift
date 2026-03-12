@@ -18,6 +18,9 @@ final class RadioPlayer: NSObject, ObservableObject {
     @Published var volume: Float {
         didSet {
             player.volume = volume
+            if selectedOutputDeviceID != 0 {
+                audioDeviceManager.setDeviceVolume(id: selectedOutputDeviceID, volume: volume)
+            }
             persist()
         }
     }
@@ -27,8 +30,21 @@ final class RadioPlayer: NSObject, ObservableObject {
     @Published var autoPlayOnLaunch: Bool {
         didSet { persist() }
     }
+    @Published var restoreArtworkPopupOnLaunch: Bool {
+        didSet { persist() }
+    }
+    @Published var selectedOutputDeviceID: UInt32 {
+        didSet {
+            applyOutputDeviceSelection()
+            persist()
+        }
+    }
+    @Published var showDockIcon: Bool {
+        didSet { persist() }
+    }
 
     private let settingsStore = SettingsStore()
+    private let audioDeviceManager = AudioDeviceManager()
     private let enrichmentService = MusicMetadataEnrichmentService()
     private let player = AVPlayer()
     private var metadataOutput: AVPlayerItemMetadataOutput?
@@ -43,9 +59,17 @@ final class RadioPlayer: NSObject, ObservableObject {
         self.volume = settings.volume
         self.metadataRefreshSeconds = settings.metadataRefreshSeconds
         self.autoPlayOnLaunch = settings.autoPlayOnLaunch
+        self.restoreArtworkPopupOnLaunch = settings.restoreArtworkPopupOnLaunch
+        self.selectedOutputDeviceID = settings.selectedOutputDeviceID
+        self.showDockIcon = settings.showDockIcon
         super.init()
 
         player.volume = volume
+        audioDeviceManager.refresh()
+        if selectedOutputDeviceID != 0, !audioDeviceManager.isValidOutputDevice(id: selectedOutputDeviceID) {
+            selectedOutputDeviceID = 0
+        }
+        applyOutputDeviceSelection()
 
         let selectedID = settings.selectedStationID ?? stations.first?.id
         if let selectedID {
@@ -469,9 +493,20 @@ final class RadioPlayer: NSObject, ObservableObject {
                 menuBarDisplay: menuBarDisplay,
                 volume: volume,
                 metadataRefreshSeconds: metadataRefreshSeconds,
-                autoPlayOnLaunch: autoPlayOnLaunch
+                autoPlayOnLaunch: autoPlayOnLaunch,
+                restoreArtworkPopupOnLaunch: restoreArtworkPopupOnLaunch,
+                selectedOutputDeviceID: selectedOutputDeviceID,
+                showDockIcon: showDockIcon
             )
         )
+    }
+
+    private func applyOutputDeviceSelection() {
+        guard selectedOutputDeviceID != 0 else {
+            return
+        }
+        _ = audioDeviceManager.setDefaultOutputDevice(id: selectedOutputDeviceID)
+        audioDeviceManager.setDeviceVolume(id: selectedOutputDeviceID, volume: volume)
     }
 
     /// Debounced enrichment lookup for the current track (year/artwork).
