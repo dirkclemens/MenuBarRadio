@@ -6,6 +6,9 @@ struct HeaderView: View {
 
     var body: some View {
         HStack(spacing: 10) {
+            Image(systemName: "radio")
+                .font(.system(size: 16, weight: .semibold))
+
             Picker("Station", selection: Binding<UUID?>(
                 get: { player.currentStation?.id },
                 set: { newValue in

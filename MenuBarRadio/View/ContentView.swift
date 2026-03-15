@@ -6,6 +6,7 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 14) {
             HeaderView()
             MetadataView()
+            SongHistoryView()
             VolumeView()
             StationListView()
             FooterActionsView()

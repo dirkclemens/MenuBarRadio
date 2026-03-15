@@ -61,6 +61,38 @@ struct NowPlayingMetadata: Codable, Equatable {
     }
 }
 
+/// Snapshot of a recently played track for history display.
+struct SongHistoryEntry: Identifiable, Codable, Equatable {
+    var id: UUID
+    var artist: String
+    var title: String
+    var album: String?
+    var releaseYear: String?
+    var releaseDate: String?
+    var stationName: String?
+    var playedAt: Date
+
+    init(
+        id: UUID = UUID(),
+        artist: String,
+        title: String,
+        album: String? = nil,
+        releaseYear: String? = nil,
+        releaseDate: String? = nil,
+        stationName: String? = nil,
+        playedAt: Date = Date()
+    ) {
+        self.id = id
+        self.artist = artist
+        self.title = title
+        self.album = album
+        self.releaseYear = releaseYear
+        self.releaseDate = releaseDate
+        self.stationName = stationName
+        self.playedAt = playedAt
+    }
+}
+
 /// Controls which fields appear in the menu bar label.
 struct MenuBarDisplayConfiguration: Codable, Equatable {
     var showArtist: Bool = true
@@ -82,6 +114,9 @@ struct AppSettings: Codable {
     var restoreArtworkPopupOnLaunch: Bool
     var selectedOutputDeviceID: UInt32
     var showDockIcon: Bool
+    var songHistoryLimit: Int
+    var songHistory: [SongHistoryEntry]
+    var recordTracks: Bool
 
     enum CodingKeys: String, CodingKey {
         case stations
@@ -93,6 +128,9 @@ struct AppSettings: Codable {
         case restoreArtworkPopupOnLaunch
         case selectedOutputDeviceID
         case showDockIcon
+        case songHistoryLimit
+        case songHistory
+        case recordTracks
     }
 
     init(
@@ -104,7 +142,10 @@ struct AppSettings: Codable {
         autoPlayOnLaunch: Bool,
         restoreArtworkPopupOnLaunch: Bool,
         selectedOutputDeviceID: UInt32,
-        showDockIcon: Bool
+        showDockIcon: Bool,
+        songHistoryLimit: Int,
+        songHistory: [SongHistoryEntry],
+        recordTracks: Bool
     ) {
         self.stations = stations
         self.selectedStationID = selectedStationID
@@ -115,6 +156,9 @@ struct AppSettings: Codable {
         self.restoreArtworkPopupOnLaunch = restoreArtworkPopupOnLaunch
         self.selectedOutputDeviceID = selectedOutputDeviceID
         self.showDockIcon = showDockIcon
+        self.songHistoryLimit = songHistoryLimit
+        self.songHistory = songHistory
+        self.recordTracks = recordTracks
     }
 
     init(from decoder: Decoder) throws {
@@ -128,6 +172,9 @@ struct AppSettings: Codable {
         restoreArtworkPopupOnLaunch = try container.decodeIfPresent(Bool.self, forKey: .restoreArtworkPopupOnLaunch) ?? false
         selectedOutputDeviceID = try container.decodeIfPresent(UInt32.self, forKey: .selectedOutputDeviceID) ?? 0
         showDockIcon = try container.decodeIfPresent(Bool.self, forKey: .showDockIcon) ?? false
+        songHistoryLimit = try container.decodeIfPresent(Int.self, forKey: .songHistoryLimit) ?? 10
+        songHistory = try container.decodeIfPresent([SongHistoryEntry].self, forKey: .songHistory) ?? []
+        recordTracks = try container.decodeIfPresent(Bool.self, forKey: .recordTracks) ?? false
     }
 
     static let defaults = AppSettings(
@@ -143,6 +190,9 @@ struct AppSettings: Codable {
         autoPlayOnLaunch: false,
         restoreArtworkPopupOnLaunch: false,
         selectedOutputDeviceID: 0,
-        showDockIcon: false
+        showDockIcon: false,
+        songHistoryLimit: 10,
+        songHistory: [],
+        recordTracks: false
     )
 }

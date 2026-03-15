@@ -17,6 +17,9 @@ struct VolumeView: View {
                     get: { Double(player.volume) },
                     set: { player.volume = Float($0) }
                 ), in: 0...1)
+                Text(Int(player.volume * 100).description + "%")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
                 Image(systemName: "speaker.wave.3.fill")
                     .foregroundStyle(.secondary)
             }

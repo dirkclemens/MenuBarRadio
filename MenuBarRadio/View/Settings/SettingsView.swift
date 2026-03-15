@@ -40,7 +40,7 @@ struct SettingsView: View {
                 }
         }
         .padding(16)
-        .frame(minWidth: 720, minHeight: 480)
+        .frame(minWidth: 620, minHeight: 480)
         .onAppear {
             selectedStationID = player.currentStation?.id ?? player.stations.first?.id
             directory.previewVolume = player.volume

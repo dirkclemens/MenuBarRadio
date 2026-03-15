@@ -20,6 +20,7 @@ struct SettingsDisplayTabView: View {
             Section("Playback") {
                 Toggle("Auto-play last station on app launch", isOn: $player.autoPlayOnLaunch)
                 Toggle("Restore artwork popup on app launch", isOn: $player.restoreArtworkPopupOnLaunch)
+                Toggle("Record tracks to ~/Music/MenuBarRadio", isOn: $player.recordTracks)
                 Toggle("Show Dock icon", isOn: $player.showDockIcon)
                     .onChange(of: player.showDockIcon) { _, newValue in
                         NSApp.setActivationPolicy(newValue ? .regular : .accessory)
@@ -69,6 +70,13 @@ struct SettingsDisplayTabView: View {
                     Text("Provider metadata refresh interval: \(Int(player.metadataRefreshSeconds)) seconds")
                 }
                 Text("Used only when a station has a metadata API URL configured.")
+                    .foregroundStyle(.secondary)
+            }
+            Section("History") {
+                Stepper(value: $player.songHistoryLimit, in: 0...50, step: 1) {
+                    Text("Keep last \(player.songHistoryLimit) tracks")
+                }
+                Text("Set to 0 to disable the recent tracks list.")
                     .foregroundStyle(.secondary)
             }
         }

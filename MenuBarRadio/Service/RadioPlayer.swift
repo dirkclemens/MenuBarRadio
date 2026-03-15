@@ -33,6 +33,14 @@ final class RadioPlayer: NSObject, ObservableObject {
     @Published var restoreArtworkPopupOnLaunch: Bool {
         didSet { persist() }
     }
+    @Published var recordTracks: Bool {
+        didSet {
+            if !recordTracks {
+                recordingManager.stop()
+            }
+            persist()
+        }
+    }
     @Published var selectedOutputDeviceID: UInt32 {
         didSet {
             applyOutputDeviceSelection()
@@ -42,10 +50,21 @@ final class RadioPlayer: NSObject, ObservableObject {
     @Published var showDockIcon: Bool {
         didSet { persist() }
     }
+    @Published var songHistoryLimit: Int {
+        didSet {
+            if songHistoryLimit < 0 { songHistoryLimit = 0 }
+            trimSongHistory()
+            persist()
+        }
+    }
+    @Published private(set) var songHistory: [SongHistoryEntry] = [] {
+        didSet { persist() }
+    }
 
     private let settingsStore = SettingsStore()
     private let audioDeviceManager = AudioDeviceManager()
     private let enrichmentService = MusicMetadataEnrichmentService()
+    private let recordingManager = TrackRecordingManager()
     private let player = AVPlayer()
     private var metadataOutput: AVPlayerItemMetadataOutput?
     private var metadataTask: Task<Void, Never>?
@@ -60,8 +79,11 @@ final class RadioPlayer: NSObject, ObservableObject {
         self.metadataRefreshSeconds = settings.metadataRefreshSeconds
         self.autoPlayOnLaunch = settings.autoPlayOnLaunch
         self.restoreArtworkPopupOnLaunch = settings.restoreArtworkPopupOnLaunch
+        self.recordTracks = settings.recordTracks
         self.selectedOutputDeviceID = settings.selectedOutputDeviceID
         self.showDockIcon = settings.showDockIcon
+        self.songHistoryLimit = settings.songHistoryLimit
+        self.songHistory = settings.songHistory
         super.init()
 
         player.volume = volume
@@ -70,6 +92,7 @@ final class RadioPlayer: NSObject, ObservableObject {
             selectedOutputDeviceID = 0
         }
         applyOutputDeviceSelection()
+        trimSongHistory()
 
         let selectedID = settings.selectedStationID ?? stations.first?.id
         if let selectedID {
@@ -81,6 +104,7 @@ final class RadioPlayer: NSObject, ObservableObject {
             .removeDuplicates()
             .sink { [weak self] fingerprint in
                 self?.scheduleEnrichment(for: fingerprint)
+                self?.recordHistory(for: fingerprint)
             }
             .store(in: &cancellables)
     }
@@ -165,6 +189,7 @@ final class RadioPlayer: NSObject, ObservableObject {
         isPlaying = false
         metadataTask?.cancel()
         metadataTask = nil
+        recordingManager.stop()
     }
 
     /// Switches the player to a given station and optionally starts playback.
@@ -172,6 +197,7 @@ final class RadioPlayer: NSObject, ObservableObject {
         guard let station = stations.first(where: { $0.id == id }) else { return }
         currentStation = station
         nowPlaying = NowPlayingMetadata()
+        recordingManager.stop()
 
         guard let url = URL(string: station.streamURL) else { return }
 
@@ -496,7 +522,10 @@ final class RadioPlayer: NSObject, ObservableObject {
                 autoPlayOnLaunch: autoPlayOnLaunch,
                 restoreArtworkPopupOnLaunch: restoreArtworkPopupOnLaunch,
                 selectedOutputDeviceID: selectedOutputDeviceID,
-                showDockIcon: showDockIcon
+                showDockIcon: showDockIcon,
+                songHistoryLimit: songHistoryLimit,
+                songHistory: songHistory,
+                recordTracks: recordTracks
             )
         )
     }
@@ -562,6 +591,142 @@ final class RadioPlayer: NSObject, ObservableObject {
         metadata.extra.removeValue(forKey: "enrichment_source")
         metadata.extra.removeValue(forKey: "enrichment_confidence")
         metadata.extra.removeValue(forKey: "enrichment_key")
+    }
+
+    private func recordHistory(for fingerprint: TrackFingerprint?) {
+        guard songHistoryLimit > 0 else {
+            songHistory.removeAll()
+            return
+        }
+        guard
+            let artist = nowPlaying.artist?.trimmingCharacters(in: .whitespacesAndNewlines),
+            let title = nowPlaying.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !artist.isEmpty,
+            !title.isEmpty,
+            let fingerprint
+        else { return }
+
+//        NSLog("Considering adding to history: \(artist) - \(title)")
+        if isPlaceholder(artist) || isPlaceholder(title) {
+            NSLog("Skipping history due to placeholder metadata: \(artist) - \(title)")
+            return
+        }
+        if let stationName = currentStation?.name,
+           !stationName.isEmpty,
+           stationName.caseInsensitiveCompare(title) == .orderedSame {
+            NSLog("Skipping history because title matches station name: \(stationName)")
+            return
+        }
+        if let stationName = currentStation?.name,
+           !stationName.isEmpty,
+           stationName.caseInsensitiveCompare(artist) == .orderedSame {
+            NSLog("Skipping history because artist matches station name: \(stationName)")
+            return
+        }
+        if let stationName = currentStation?.name,
+           !stationName.isEmpty {
+            if containsNormalized(haystack: title, needle: stationName) ||
+                containsNormalized(haystack: artist, needle: stationName) {
+                NSLog("Skipping history because station name is embedded in metadata: \(artist) - \(title) -> \(stationName)")
+                return
+            }
+            let combined = "\(artist) \(title)"
+            let tokens = stationTokens(from: stationName)
+            if matchesStationTokens(in: combined, tokens: tokens) {
+                NSLog("Skipping history because station tokens match metadata: \(artist) - \(title) -> \(stationName)")
+                return
+            }
+        }
+
+        if let last = songHistory.first, last.artist == fingerprint.artist, last.title == fingerprint.title {
+            NSLog("Skipping history because last entry matches current track")
+            return
+        }
+
+        let entry = SongHistoryEntry(
+            artist: artist,
+            title: title,
+            album: nowPlaying.album,
+            releaseYear: nowPlaying.releaseYear ?? nowPlaying.year,
+            releaseDate: nowPlaying.formattedReleaseDate(),
+            stationName: currentStation?.name,
+            playedAt: Date()
+        )
+        NSLog("Adding to history: \(entry.artist) - \(entry.title) (Station: \(entry.stationName ?? "N/A"))")
+        songHistory.insert(entry, at: 0)
+        trimSongHistory()
+
+        if recordTracks {
+            NSLog("Starting recording for track: \(entry.artist) - \(entry.title)")
+            startRecordingIfPossible(with: fingerprint)
+        }
+    }
+
+    private func trimSongHistory() {
+        guard songHistoryLimit > 0 else {
+            songHistory.removeAll()
+            return
+        }
+        if songHistory.count > songHistoryLimit {
+            songHistory = Array(songHistory.prefix(songHistoryLimit))
+        }
+    }
+
+    private func isPlaceholder(_ value: String) -> Bool {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized.isEmpty { return true }
+        let placeholders: Set<String> = [
+            "unknown", "unknown artist", "unknown title",
+            "no title metadata", "no artist metadata",
+            "n/a", "na", "not available",
+            "stream", "streaming", "radio", "live",
+            "advertisement", "ads", "commercial"
+        ]
+        if placeholders.contains(normalized) { return true }
+        if normalized.contains("unknown") { return true }
+        if normalized.contains("no title") || normalized.contains("no artist") { return true }
+        if normalized.contains("advert") || normalized.contains("commercial") { return true }
+        return false
+    }
+
+    private func containsNormalized(haystack: String, needle: String) -> Bool {
+        let normalizedHaystack = normalizeForComparison(haystack)
+        let normalizedNeedle = normalizeForComparison(needle)
+        guard !normalizedNeedle.isEmpty else { return false }
+        return normalizedHaystack.contains(normalizedNeedle)
+    }
+
+    private func normalizeForComparison(_ value: String) -> String {
+        value
+            .lowercased()
+            .replacingOccurrences(of: "&", with: "and")
+            .filter { $0.isLetter || $0.isNumber }
+    }
+
+    private func stationTokens(from stationName: String) -> [String] {
+        let stopwords: Set<String> = ["radio", "fm", "am", "stream", "live", "station", "the"]
+        return stationName
+            .lowercased()
+            .replacingOccurrences(of: "&", with: "and")
+            .split { !$0.isLetter && !$0.isNumber }
+            .map(String.init)
+            .filter { $0.count >= 3 && !stopwords.contains($0) }
+    }
+
+    private func matchesStationTokens(in value: String, tokens: [String]) -> Bool {
+        guard !tokens.isEmpty else { return false }
+        let normalized = value.lowercased()
+        let matchCount = tokens.reduce(0) { count, token in
+            normalized.contains(token) ? count + 1 : count
+        }
+        return matchCount >= min(2, tokens.count)
+    }
+
+    private func startRecordingIfPossible(with fingerprint: TrackFingerprint) {
+        guard let station = currentStation else { return }
+        guard let url = URL(string: station.streamURL) else { return }
+        let displayName = "\(fingerprint.artist) - \(fingerprint.title)"
+        recordingManager.start(streamURL: url, trackKey: fingerprint.cacheKey, displayName: displayName)
     }
 }
 
