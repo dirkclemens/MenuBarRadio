@@ -23,7 +23,7 @@ struct SongHistoryView: View {
                                     Text("\(Self.timeFormatter.string(from: entry.playedAt)) •")
                                         .font(.subheadline)
                                         .foregroundStyle(.secondary)
-                                    //ScrollLabelView(label: historyLine(for: entry))
+//                                    ScrollLabelView(label: historyLine(for: entry))
                                     Text(historyLine(for: entry))
                                         .font(.subheadline)
                                         .foregroundStyle(.secondary)
@@ -33,7 +33,7 @@ struct SongHistoryView: View {
                             }
                         }
                     }
-                    .frame(maxHeight: 100)
+                    .frame(height: min(CGFloat(player.songHistory.count), 6) * 18)
                 }
             }
             .textSelection(.enabled)

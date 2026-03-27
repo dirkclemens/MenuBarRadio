@@ -19,7 +19,8 @@ struct SettingsView: View {
             SettingsStationsTabView(
                 selectedStationID: $selectedStationID,
                 onImport: { isShowingImporter = true },
-                onExport: exportStations
+                onExport: exportStations,
+                onRefreshStation: refreshStationDetails
             )
                 .tabItem {
                     Label("Stations", systemImage: "dot.radiowaves.left.and.right")
@@ -40,7 +41,7 @@ struct SettingsView: View {
                 }
         }
         .padding(16)
-        .frame(minWidth: 620, minHeight: 480)
+        .frame(minWidth: 620, minHeight: 520)
         .onAppear {
             selectedStationID = player.currentStation?.id ?? player.stations.first?.id
             directory.previewVolume = player.volume
@@ -160,10 +161,92 @@ struct SettingsView: View {
             codec: directoryStation.codec.isEmpty ? nil : directoryStation.codec,
             bitrate: directoryStation.bitrate,
             votes: directoryStation.votes,
-            tags: directoryStation.tags.isEmpty ? nil : directoryStation.tags
+            tags: directoryStation.tags.isEmpty ? nil : directoryStation.tags,
+            country: directoryStation.country.isEmpty ? nil : directoryStation.country,
+            countryCode: directoryStation.countryCode.isEmpty ? nil : directoryStation.countryCode,
+            state: directoryStation.state.isEmpty ? nil : directoryStation.state,
+            language: directoryStation.language.isEmpty ? nil : directoryStation.language,
+            languageCodes: directoryStation.languageCodes.isEmpty ? nil : directoryStation.languageCodes,
+            homepageURL: directoryStation.homepageURL,
+            faviconURL: directoryStation.faviconURL,
+            geoLatitude: directoryStation.geoLatitude,
+            geoLongitude: directoryStation.geoLongitude,
+            geoDistance: directoryStation.geoDistance
+        )
+        NSLog(
+            "Directory station details: country=%@ countryCode=%@ state=%@ language=%@ languageCodes=%@ homepage=%@ favicon=%@ geo_lat=%@ geo_long=%@ geo_distance=%@",
+            station.country ?? "nil",
+            station.countryCode ?? "nil",
+            station.state ?? "nil",
+            station.language ?? "nil",
+            station.languageCodes ?? "nil",
+            station.homepageURL?.absoluteString ?? "nil",
+            station.faviconURL?.absoluteString ?? "nil",
+            station.geoLatitude.map { String($0) } ?? "nil",
+            station.geoLongitude.map { String($0) } ?? "nil",
+            station.geoDistance.map { String($0) } ?? "nil"
         )
         player.appendStation(station)
         selectedStationID = station.id
+    }
+
+    private func refreshStationDetails(_ station: RadioStation) async {
+        let provider = RadioBrowserDirectoryProvider()
+        let query = RadioDirectorySearchQuery(
+            text: station.name,
+            countryCode: station.countryCode ?? "",
+            tag: "",
+            limit: 60,
+            hideBroken: true
+        )
+
+        do {
+            let results = try await provider.searchStations(query: query)
+            guard let match = bestDirectoryMatch(for: station, in: results) else { return }
+            let updated = mergeStation(station, with: match)
+            await MainActor.run {
+                player.updateStation(updated)
+            }
+        } catch {
+            NSLog("Refresh details failed for \(station.name): \(error.localizedDescription)")
+        }
+    }
+
+    private func bestDirectoryMatch(for station: RadioStation, in results: [RadioDirectoryStation]) -> RadioDirectoryStation? {
+        guard !results.isEmpty else { return nil }
+        let target = station.streamURL.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let urlMatches = results.filter { result in
+            let candidates = [result.preferredStreamURL, result.streamURL]
+                .compactMap { $0?.absoluteString.lowercased() }
+            return candidates.contains(target)
+        }
+        if let bestURLMatch = urlMatches.max(by: { ($0.votes ?? 0) < ($1.votes ?? 0) }) {
+            return bestURLMatch
+        }
+        let nameMatches = results.filter { $0.name.caseInsensitiveCompare(station.name) == .orderedSame }
+        if let bestNameMatch = nameMatches.max(by: { ($0.votes ?? 0) < ($1.votes ?? 0) }) {
+            return bestNameMatch
+        }
+        return results.max(by: { ($0.votes ?? 0) < ($1.votes ?? 0) }) ?? results.first
+    }
+
+    private func mergeStation(_ station: RadioStation, with directory: RadioDirectoryStation) -> RadioStation {
+        var updated = station
+        updated.codec = directory.codec.isEmpty ? station.codec : directory.codec
+        updated.bitrate = directory.bitrate ?? station.bitrate
+        updated.votes = directory.votes ?? station.votes
+        updated.tags = directory.tags.isEmpty ? station.tags : directory.tags
+        updated.country = directory.country.isEmpty ? station.country : directory.country
+        updated.countryCode = directory.countryCode.isEmpty ? station.countryCode : directory.countryCode
+        updated.state = directory.state.isEmpty ? station.state : directory.state
+        updated.language = directory.language.isEmpty ? station.language : directory.language
+        updated.languageCodes = directory.languageCodes.isEmpty ? station.languageCodes : directory.languageCodes
+        updated.homepageURL = directory.homepageURL ?? station.homepageURL
+        updated.faviconURL = directory.faviconURL ?? station.faviconURL
+        updated.geoLatitude = directory.geoLatitude ?? station.geoLatitude
+        updated.geoLongitude = directory.geoLongitude ?? station.geoLongitude
+        updated.geoDistance = directory.geoDistance ?? station.geoDistance
+        return updated
     }
 }
 

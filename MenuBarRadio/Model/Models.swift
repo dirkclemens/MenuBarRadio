@@ -11,6 +11,16 @@ struct RadioStation: Identifiable, Codable, Equatable {
     var bitrate: Int?
     var votes: Int?
     var tags: String?
+    var country: String?
+    var countryCode: String?
+    var state: String?
+    var language: String?
+    var languageCodes: String?
+    var homepageURL: URL?
+    var faviconURL: URL?
+    var geoLatitude: Double?
+    var geoLongitude: Double?
+    var geoDistance: Double?
 
     init(
         id: UUID = UUID(),
@@ -21,7 +31,17 @@ struct RadioStation: Identifiable, Codable, Equatable {
         codec: String? = nil,
         bitrate: Int? = nil,
         votes: Int? = nil,
-        tags: String? = nil
+        tags: String? = nil,
+        country: String? = nil,
+        countryCode: String? = nil,
+        state: String? = nil,
+        language: String? = nil,
+        languageCodes: String? = nil,
+        homepageURL: URL? = nil,
+        faviconURL: URL? = nil,
+        geoLatitude: Double? = nil,
+        geoLongitude: Double? = nil,
+        geoDistance: Double? = nil
     ) {
         self.id = id
         self.name = name
@@ -32,6 +52,16 @@ struct RadioStation: Identifiable, Codable, Equatable {
         self.bitrate = bitrate
         self.votes = votes
         self.tags = tags
+        self.country = country
+        self.countryCode = countryCode
+        self.state = state
+        self.language = language
+        self.languageCodes = languageCodes
+        self.homepageURL = homepageURL
+        self.faviconURL = faviconURL
+        self.geoLatitude = geoLatitude
+        self.geoLongitude = geoLongitude
+        self.geoDistance = geoDistance
     }
 }
 
@@ -101,7 +131,6 @@ struct MenuBarDisplayConfiguration: Codable, Equatable {
     var showStationNameFallback: Bool = true
     var maxLength: Int = 36
 }
-
 
 /// Persisted app settings stored in UserDefaults.
 struct AppSettings: Codable {

@@ -35,9 +35,10 @@ final class RadioPlayer: NSObject, ObservableObject {
     }
     @Published var recordTracks: Bool {
         didSet {
-            if !recordTracks {
-                recordingManager.stop()
+            if recordTracks {
+                recordTracks = false
             }
+            recordingManager.stop()
             persist()
         }
     }
@@ -70,6 +71,7 @@ final class RadioPlayer: NSObject, ObservableObject {
     private var metadataTask: Task<Void, Never>?
     private var metadataEnrichmentTask: Task<Void, Never>?
     private var cancellables = Set<AnyCancellable>()
+    private var itemStatusObservation: NSKeyValueObservation?
 
     override init() {
         let settings = settingsStore.load()
@@ -79,7 +81,7 @@ final class RadioPlayer: NSObject, ObservableObject {
         self.metadataRefreshSeconds = settings.metadataRefreshSeconds
         self.autoPlayOnLaunch = settings.autoPlayOnLaunch
         self.restoreArtworkPopupOnLaunch = settings.restoreArtworkPopupOnLaunch
-        self.recordTracks = settings.recordTracks
+        self.recordTracks = false
         self.selectedOutputDeviceID = settings.selectedOutputDeviceID
         self.showDockIcon = settings.showDockIcon
         self.songHistoryLimit = settings.songHistoryLimit
@@ -208,6 +210,7 @@ final class RadioPlayer: NSObject, ObservableObject {
         metadataOutput = output
 
         player.replaceCurrentItem(with: item)
+        itemStatusObservation = nil
         player.volume = volume
 
         let shouldAutoPlay = autoPlay ?? isPlaying
@@ -538,6 +541,7 @@ final class RadioPlayer: NSObject, ObservableObject {
         audioDeviceManager.setDeviceVolume(id: selectedOutputDeviceID, volume: volume)
     }
 
+
     /// Debounced enrichment lookup for the current track (year/artwork).
     private func scheduleEnrichment(for fingerprint: TrackFingerprint?) {
         metadataEnrichmentTask?.cancel()
@@ -656,10 +660,7 @@ final class RadioPlayer: NSObject, ObservableObject {
         songHistory.insert(entry, at: 0)
         trimSongHistory()
 
-        if recordTracks {
-            NSLog("Starting recording for track: \(entry.artist) - \(entry.title)")
-            startRecordingIfPossible(with: fingerprint)
-        }
+        // Recording disabled.
     }
 
     private func trimSongHistory() {
@@ -723,10 +724,7 @@ final class RadioPlayer: NSObject, ObservableObject {
     }
 
     private func startRecordingIfPossible(with fingerprint: TrackFingerprint) {
-        guard let station = currentStation else { return }
-        guard let url = URL(string: station.streamURL) else { return }
-        let displayName = "\(fingerprint.artist) - \(fingerprint.title)"
-        recordingManager.start(streamURL: url, trackKey: fingerprint.cacheKey, displayName: displayName)
+        // Recording disabled.
     }
 }
 

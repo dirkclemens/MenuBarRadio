@@ -27,6 +27,7 @@ Fully vibe coded / agentic coded using GPT-5.3-Codex
   - release date (localized)
   - bitrate / codec / votes (from directory metadata when available)
   - artwork image (when available)
+  - lyrics popover (via LRCLIB)
 - Configurable menu bar label:
   - show/hide artist
   - show/hide title
@@ -43,10 +44,14 @@ Fully vibe coded / agentic coded using GPT-5.3-Codex
   - set optional metadata API URL
   - favorite stations
   - configure metadata refresh interval
+  - configure recent track history length
+  - show/hide Dock icon
+  - launch at login
 - Auto-play last station on app launch (optional).
 - Restore artwork popup window on app launch (optional).
-- Volume control (uses default macOS output device).
+- Volume control (uses default macOS output device unless overridden).
 - Output device selection (Automatic/system default or a specific device).
+- Recent tracks history list in the menu popup.
 - Right-click copy artwork to clipboard.
 - Text selection enabled in metadata panel for easy copy.
 
@@ -60,6 +65,7 @@ Fully vibe coded / agentic coded using GPT-5.3-Codex
 - `View/HeaderView.swift`: station picker + play/pause.
 - `View/MetadataView.swift`: now-playing metadata panel.
 - `View/VolumeView.swift`: volume slider.
+- `View/SongHistoryView.swift`: recent tracks history list.
 - `View/StationListView.swift`: station list.
 - `View/FooterActionsView.swift`: settings + quit row.
 - `View/SettingsView.swift`: station and display configuration UI.
@@ -93,7 +99,6 @@ Fully vibe coded / agentic coded using GPT-5.3-Codex
 - Add explicit error state in UI for unreachable streams.
 - Add per-app output routing (avoid changing system default).
 - React to system device changes (auto-refresh device list).
-- Add equalizer/band controls (bass/mid/treble).
 - Add keyboard shortcuts and media key support.
 - Add menu-bar-only launch option and optional dock icon behavior.
 - Add unit tests:

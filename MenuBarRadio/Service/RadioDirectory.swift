@@ -38,7 +38,12 @@ struct RadioDirectoryStation: Identifiable, Hashable {
     let tags: String
     let country: String
     let countryCode: String // https://en.wikipedia.org/wiki/ISO_3166-1_alpha-2
+    let state: String
     let language: String
+    let languageCodes: String
+    let geoLatitude: Double?
+    let geoLongitude: Double?
+    let geoDistance: Double?
     let codec: String
     let bitrate: Int?
     let votes: Int?
@@ -105,7 +110,12 @@ struct RadioBrowserDirectoryProvider: RadioDirectoryProvider {
                 tags: dto.tags,
                 country: dto.country,
                 countryCode: dto.countrycode,
+                state: dto.state,
                 language: dto.language,
+                languageCodes: dto.languagecodes,
+                geoLatitude: dto.geo_lat,
+                geoLongitude: dto.geo_long,
+                geoDistance: dto.geo_distance,
                 codec: dto.codec,
                 bitrate: dto.bitrate,
                 votes: dto.votes,
@@ -283,7 +293,12 @@ private struct RadioBrowserStationDTO: Decodable {
     let tags: String
     let country: String
     let countrycode: String
+    let state: String
     let language: String
+    let languagecodes: String
+    let geo_lat: Double?
+    let geo_long: Double?
+    let geo_distance: Double?
     let codec: String
     let bitrate: Int?
     let votes: Int?
@@ -299,7 +314,12 @@ private struct RadioBrowserStationDTO: Decodable {
         case tags
         case country
         case countrycode
+        case state
         case language
+        case languagecodes
+        case geo_lat
+        case geo_long
+        case geo_distance
         case codec
         case bitrate
         case votes
@@ -317,7 +337,12 @@ private struct RadioBrowserStationDTO: Decodable {
         tags = (try? container.decode(String.self, forKey: .tags)) ?? ""
         country = (try? container.decode(String.self, forKey: .country)) ?? ""
         countrycode = (try? container.decode(String.self, forKey: .countrycode)) ?? ""
+        state = (try? container.decode(String.self, forKey: .state)) ?? ""
         language = (try? container.decode(String.self, forKey: .language)) ?? ""
+        languagecodes = (try? container.decode(String.self, forKey: .languagecodes)) ?? ""
+        geo_lat = container.decodeDoubleLike(forKey: .geo_lat)
+        geo_long = container.decodeDoubleLike(forKey: .geo_long)
+        geo_distance = container.decodeDoubleLike(forKey: .geo_distance)
         codec = (try? container.decode(String.self, forKey: .codec)) ?? ""
         bitrate = container.decodeIntLike(forKey: .bitrate)
         votes = container.decodeIntLike(forKey: .votes)
@@ -335,6 +360,19 @@ private extension KeyedDecodingContainer {
         }
         if let boolValue = try? decode(Bool.self, forKey: key) {
             return boolValue ? 1 : 0
+        }
+        return nil
+    }
+
+    func decodeDoubleLike(forKey key: Key) -> Double? {
+        if let doubleValue = try? decode(Double.self, forKey: key) {
+            return doubleValue
+        }
+        if let intValue = try? decode(Int.self, forKey: key) {
+            return Double(intValue)
+        }
+        if let stringValue = try? decode(String.self, forKey: key) {
+            return Double(stringValue)
         }
         return nil
     }

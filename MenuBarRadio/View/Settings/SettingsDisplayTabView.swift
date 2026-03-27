@@ -5,6 +5,7 @@ import SwiftUI
 struct SettingsDisplayTabView: View {
     @EnvironmentObject private var player: RadioPlayer
     @StateObject private var deviceManager = AudioDeviceManager()
+    @StateObject private var loginItemManager = LoginItemManager()
 
     var body: some View {
         Form {
@@ -20,18 +21,15 @@ struct SettingsDisplayTabView: View {
             Section("Playback") {
                 Toggle("Auto-play last station on app launch", isOn: $player.autoPlayOnLaunch)
                 Toggle("Restore artwork popup on app launch", isOn: $player.restoreArtworkPopupOnLaunch)
-                Toggle("Record tracks to ~/Music/MenuBarRadio", isOn: $player.recordTracks)
+//                Toggle("Record tracks to ~/Music/MenuBarRadio", isOn: $player.recordTracks)
                 Toggle("Show Dock icon", isOn: $player.showDockIcon)
-                    .onChange(of: player.showDockIcon) { _, newValue in
-                        NSApp.setActivationPolicy(newValue ? .regular : .accessory)
+                    .onChange(of: player.showDockIcon) { _, value in
+                        DockIconManager.apply(showDockIcon: value)
                     }
-                HStack {
-                    Text("Volume")
-                    Slider(value: Binding(
-                        get: { Double(player.volume) },
-                        set: { player.volume = Float($0) }
-                    ), in: 0...1)
-                }
+                Toggle("Launch at login", isOn: Binding(
+                    get: { loginItemManager.isEnabled },
+                    set: { loginItemManager.setEnabled($0) }
+                ))
                 Text("Automatic output follows the system default device.")
                     .foregroundStyle(.secondary)
             }

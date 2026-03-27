@@ -15,15 +15,15 @@ struct MenuBarRadioApp: App {
     init() {
         let player = RadioPlayer()
         _player = StateObject(wrappedValue: player)
-        DispatchQueue.main.async {
-            NSApplication.shared.setActivationPolicy(player.showDockIcon ? .regular : .accessory)
-        }
         if player.restoreArtworkPopupOnLaunch,
            ArtworkPopupWindowController.shared.wasOpenLastSession {
             DispatchQueue.main.async {
                 ArtworkPopupWindowController.shared.show(with: player)
             }
         }
+        
+        let showDockIcon = UserDefaults.standard.bool(forKey: "showDockIcon")
+        DockIconManager.apply(showDockIcon: showDockIcon)
     }
 
     var body: some Scene {
