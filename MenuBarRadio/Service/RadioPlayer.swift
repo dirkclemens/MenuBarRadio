@@ -436,12 +436,23 @@ final class RadioPlayer: NSObject, ObservableObject {
     }
 
     /// Parses timed metadata (ICY/ID3/common keys) from the stream.
-    private func updateFromTimedMetadata(item: AVMetadataItem) {
+    private func updateFromTimedMetadata(item: AVMetadataItem) async {
         var updated = nowPlaying
         let oldFingerprint = TrackFingerprint(metadata: nowPlaying)
         var trackIdentityUpdated = false
 
-        let stringValue = item.stringValue ?? item.value as? String
+        let stringValue: String?
+        if #available(macOS 13.0, *) {
+            let loadedValue = try? await item.load(.stringValue)
+            if let loadedValue {
+                stringValue = loadedValue
+            } else {
+                let anyValue = try? await item.load(.value)
+                stringValue = anyValue as? String
+            }
+        } else {
+            stringValue = item.stringValue ?? item.value as? String
+        }
         if let stringValue {
             let normalizedKey = (item.commonKey?.rawValue ?? "\(String(describing: item.key))").lowercased()
 
@@ -488,7 +499,13 @@ final class RadioPlayer: NSObject, ObservableObject {
             }
         }
 
-        if let data = item.dataValue, let image = NSImage(data: data), let tiff = image.tiffRepresentation {
+        let dataValue: Data?
+        if #available(macOS 13.0, *) {
+            dataValue = try? await item.load(.dataValue)
+        } else {
+            dataValue = item.dataValue
+        }
+        if let data = dataValue, let image = NSImage(data: data), let tiff = image.tiffRepresentation {
             let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("menubarradio-artwork-\(UUID().uuidString).tiff")
             try? tiff.write(to: tempURL)
             updated.artworkURL = tempURL
@@ -761,7 +778,7 @@ extension RadioPlayer: AVPlayerItemMetadataOutputPushDelegate {
             guard let self else { return }
             for group in groups {
                 for item in group.items {
-                    updateFromTimedMetadata(item: item)
+                    await updateFromTimedMetadata(item: item)
                 }
             }
         }

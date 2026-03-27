@@ -38,6 +38,8 @@ struct MetadataView: View {
                     }
                 }
 
+                Divider().frame(height: 1).background(.windowBackground)
+                
                 if let station = player.currentStation {
                     let url = URL(string: station.streamURL)!
                     Link(station.name.isEmpty ? "Unknown Station" : "Station: \(station.name)", destination: url)

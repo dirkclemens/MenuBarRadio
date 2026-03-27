@@ -124,9 +124,12 @@ final class AudioDeviceManager: ObservableObject {
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        var cfName: CFString = "" as CFString
-        var size = UInt32(MemoryLayout<CFString>.size)
-        if AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &cfName) == noErr {
+        var cfName: CFString?
+        var size = UInt32(MemoryLayout<CFString?>.size)
+        let status = withUnsafeMutablePointer(to: &cfName) { ptr in
+            AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, ptr)
+        }
+        if status == noErr, let cfName {
             return cfName as String
         }
         return "Unknown Device"
