@@ -46,17 +46,24 @@ final class ArtworkPopupWindowController {
         restoreWindowFrameIfAvailable(window)
         window.contentView = hostingView
         window.makeKeyAndOrderFront(nil)        
-//        window.backgroundColor = .clear
-        window.backgroundColor = NSColor.gray.withAlphaComponent(0.25)
+
+        window.backgroundColor = .clear
+//        window.backgroundColor = NSColor.gray.withAlphaComponent(0.25)
         window.isOpaque = false
+        window.hasShadow = true
         window.invalidateShadow()
-        window.contentView?.wantsLayer = true
-        window.contentView?.layer?.cornerRadius = 16.0
-        window.contentView?.layer?.masksToBounds = true
-//        window.collectionBehavior.insert(.canJoinAllSpaces)
+
+        //        window.collectionBehavior.insert(.canJoinAllSpaces)
         window.collectionBehavior.insert(.moveToActiveSpace)
         window.setFrameAutosaveName("MenuBarRadioArtworkPopupWindow")
+        window.minSize = NSSize(width: 320, height: 380)
 
+        if let contentView = window.contentView {
+            contentView.wantsLayer = true
+            contentView.layer?.cornerRadius = 16
+            contentView.layer?.masksToBounds = true
+        }
+        
 //        window.contentView?.layer?.state = .active
 //        window.contentView?.layer?.material = .light
 

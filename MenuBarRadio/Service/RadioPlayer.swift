@@ -184,6 +184,9 @@ final class RadioPlayer: NSObject, ObservableObject {
         player.play()
         isPlaying = true
         startMetadataPollingIfNeeded()
+        if (self.restoreArtworkPopupOnLaunch) {
+            ArtworkPopupWindowController.shared.show(with: self)
+        }
     }
 
     func pause() {
@@ -192,6 +195,7 @@ final class RadioPlayer: NSObject, ObservableObject {
         metadataTask?.cancel()
         metadataTask = nil
         recordingManager.stop()
+        ArtworkPopupWindowController.shared.close()
     }
 
     /// Switches the player to a given station and optionally starts playback.
@@ -698,7 +702,8 @@ final class RadioPlayer: NSObject, ObservableObject {
             "no title metadata", "no artist metadata",
             "n/a", "na", "not available",
             "stream", "streaming", "radio", "live",
-            "advertisement", "ads", "commercial"
+            "advertisement", "ads", "commercial",
+            "verbraucherinformationen", "werbung", "reklame"
         ]
         if placeholders.contains(normalized) { return true }
         if normalized.contains("unknown") { return true }

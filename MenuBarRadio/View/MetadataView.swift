@@ -70,7 +70,24 @@ struct MetadataView: View {
                     
                     if let urlString = player.nowPlaying.extra["artwork_source_url"],
                        let url = URL(string: urlString) {
-                        Link(" - Artwork Source", destination: url)
+                        Link("| Artwork Source", destination: url)
+                            .font(.caption)
+                    }
+                }
+                HStack{
+                    if let title = player.nowPlaying.title,
+                       let artist = player.nowPlaying.artist {
+
+                        let query = "\(title) \(artist)"
+                        let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+
+                        // For Apple Music, we can just do a search query with the title and artist combined.
+                        Link("Apple Music", destination: URL(string: "https://music.apple.com/search?term=\(encodedQuery)")!)
+                            .font(.caption)
+
+                        // For Spotify, we can just do a search query with the title and artist combined.
+                        let url = URL(string: "https://open.spotify.com/search/\(encodedQuery)") ?? URL(string: "https://open.spotify.com")!
+                        Link("Spotify", destination: url)
                             .font(.caption)
                     }
                 }

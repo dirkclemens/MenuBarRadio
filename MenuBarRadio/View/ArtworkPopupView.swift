@@ -65,7 +65,7 @@ struct ArtworkPopupView: View {
         .padding(16)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .foregroundStyle(popupForeground)
-//        .frame(minWidth: 320, minHeight: 380)
+        .frame(minWidth: 320, minHeight: 380)
     }
 
     private var artwork: some View {
