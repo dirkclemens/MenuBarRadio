@@ -1,7 +1,8 @@
 # MenuBarRadio
 
-MenuBarRadio is a macOS SwiftUI "MenuBarExtra" app for streaming web radio with live now-playing metadata.
-Fully vibe coded / agentic coded using GPT-5.3-Codex
+MenuBarRadio is a macOS `MenuBarExtra` app for streaming internet radio with rich, automatically enriched now-playing information. Beyond simple play/pause and station management, it parses live stream metadata, cross-references it against MusicBrainz, the iTunes Search API, and the Cover Art Archive to fill in artist, title, release year, and artwork, and can even fetch lyrics via LRCLIB — all shown directly in the menu bar popover.
+
+Fully vibe coded / agentic coded using GPT-5.3-Codex.
 
 ---
 
@@ -9,7 +10,7 @@ Fully vibe coded / agentic coded using GPT-5.3-Codex
 
 ![screenshot](./screenshot.png)
 
-## Current Features
+## Features
 
 - Menu bar app with play/pause controls.
 - Plays stream URLs (AAC/MP3/HLS and other AVPlayer-compatible endpoints).
@@ -55,6 +56,38 @@ Fully vibe coded / agentic coded using GPT-5.3-Codex
 - Right-click copy artwork to clipboard.
 - Text selection enabled in metadata panel for easy copy.
 
+---
+
+## Requirements
+
+| | |
+|---|---|
+| macOS | 14.0 Sonoma or later |
+| Architecture | Apple Silicon only |
+
+---
+
+## Installation
+
+### Build from source
+
+1. Open `MenuBarRadio.xcodeproj` in Xcode.
+2. Build and run the `MenuBarRadio` target.
+3. The app appears as a menu bar item.
+4. Open `Settings` from the menu popup to configure your streams.
+
+### Prebuilt DMG
+
+A ready-to-run build is available as `MenuBarRadio-1.0.dmg` (ad-hoc signed, Apple Silicon only). Since it isn't notarized by Apple, macOS blocks it on first launch. Remove the quarantine flag before opening:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/MenuBarRadio.app
+```
+
+Alternatively, right-click the app in Finder and choose "Open".
+
+---
+
 ## Project Structure
 
 - `MenuBarRadioApp.swift`: app entry, `MenuBarExtra`, settings scene.
@@ -75,39 +108,13 @@ Fully vibe coded / agentic coded using GPT-5.3-Codex
 - `View/ArtworkView.swift`: now-playing artwork rendering (copy to clipboard).
 - `View/MenuBarLabelView.swift`: menu bar icon + dynamic text label.
 
-## Build & Run
-
-1. Open `MenuBarRadio.xcodeproj` in Xcode.
-2. Build and run the `MenuBarRadio` target.
-3. The app appears as a menu bar item.
-4. Open `Settings` from the menu popup to configure your streams.
-
-## Implementation Plan
-
-1. Build reliable stream playback core with `AVPlayer`.
-2. Extract metadata from timed stream data (`ICY`/ID3/common metadata keys).
-3. Add optional provider metadata endpoint polling.
-4. Add station management and persistence.
-5. Add configurable menu bar label and tooltip.
-6. Add settings for future audio controls.
-7. Stabilize with tests/logging/error handling and prepare release packaging.
-
-## TODO
-
-- Validate and normalize stream URLs in settings.
-- Improve metadata provider mapping with per-station field mapping templates.
-- Add explicit error state in UI for unreachable streams.
-- Add per-app output routing (avoid changing system default).
-- React to system device changes (auto-refresh device list).
-- Add keyboard shortcuts and media key support.
-- Add menu-bar-only launch option and optional dock icon behavior.
-- Add unit tests:
-  - metadata parsing
-  - persistence
-  - label formatting
-- Add UI tests for station CRUD and playback flow.
-
 ## Notes
 
 - Some URLs (for example App Store/iTunes pages) are not direct audio streams and cannot be played directly by `AVPlayer`.
 - Direct stream URLs (like `.../livestream-redirect/...aac` or `.../mp3-192/mediaplayer`) are supported when the endpoint serves playable audio.
+
+---
+
+## License
+
+This project is licensed under the [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0) — see [LICENSE](LICENSE) for details. Free for noncommercial use; commercial use requires a separate license from the author.
