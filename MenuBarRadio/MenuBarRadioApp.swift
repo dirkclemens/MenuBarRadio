@@ -24,6 +24,7 @@ struct MenuBarRadioApp: App {
         
         let showDockIcon = UserDefaults.standard.bool(forKey: "showDockIcon")
         DockIconManager.apply(showDockIcon: showDockIcon)
+        UpdateChecker.checkForUpdate()
     }
 
     var body: some Scene {
