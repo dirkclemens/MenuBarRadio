@@ -3,99 +3,28 @@ import SwiftUI
 /// Floating artwork window content with basic playback controls.
 struct ArtworkPopupView: View {
     @EnvironmentObject private var player: RadioPlayer
-    @Environment(\.colorScheme) private var colorScheme
 
-    private var popupForeground: Color {
-        colorScheme == .light ? .white : .black
-    }
-    
     let onClose: () -> Void
 
     var body: some View {
-        VStack(spacing: 0) {
-            artwork
-            HStack(spacing: 6) {
-                Button {
-                    player.togglePlayPause()
-                } label: {
-                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                        .frame(width: 26)
-                }
-                .buttonStyle(.borderedProminent)
-
-                Spacer()
-                
-                VStack(spacing: 0) {
-                    Text(player.nowPlaying.title ?? "No title metadata")
-                        .font(.headline)
-                        .lineLimit(2)
-                    HStack(spacing: 6) {
-                        Text(player.nowPlaying.artist ?? "Unknown artist")
-                            .font(.subheadline)
-                            .lineLimit(1)
-                        if let album = player.nowPlaying.album, !album.isEmpty {
-                            Text("• \(player.nowPlaying.album ?? "No album metadata")")
-                                .font(.subheadline)
-                                .lineLimit(1)
-                        }
-                    }
-                    if let releaseDate = player.nowPlaying.formattedReleaseDate() {
-                        Text("Release: \(releaseDate)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else if let year = player.nowPlaying.year {
-                        Text("Year: \(year)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .padding(.top, 8)
-//                .background(.ultraThinMaterial)
-                
-                Spacer()
-                
-                Button {
-                    onClose()
-                } label: {
-                    Image(systemName: "xmark.circle")
-                        .frame(width: 26)
-                }
-            }
-        }
-        .padding(16)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .foregroundStyle(popupForeground)
-        .frame(minWidth: 320, minHeight: 380)
+        ArtworkPopupContent(
+            metadata: .init(nowPlaying: player.nowPlaying),
+            isPlaying: player.isPlaying,
+            onPlayPause: player.togglePlayPause,
+            onClose: onClose
+        )
     }
+}
 
-    private var artwork: some View {
-        Group {
-            if let url = player.nowPlaying.artworkURL {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFill()
-                    default:
-                        placeholder
-                    }
-                }
-            } else {
-                placeholder
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-//        .frame(minWidth: 220, minHeight: 280)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-    }
-
-    private var placeholder: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 12)
-                .fill(.quaternary)
-            Image(systemName: "music.note")
-                .foregroundStyle(.secondary)
-        }
+private extension ArtworkPopupData {
+    init(nowPlaying: NowPlayingMetadata) {
+        self.init(
+            title: nowPlaying.title,
+            artist: nowPlaying.artist,
+            album: nowPlaying.album,
+            year: nowPlaying.releaseYear,
+            releaseDate: nowPlaying.formattedReleaseDate(),
+            artworkURL: nowPlaying.artworkURL
+        )
     }
 }

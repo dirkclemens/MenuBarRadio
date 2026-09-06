@@ -2,13 +2,18 @@ import AVFoundation
 import AppKit
 import Combine
 import Foundation
+import WidgetKit
 
 /// Core playback engine: stream control, metadata parsing, and settings persistence.
 @MainActor
 final class RadioPlayer: NSObject, ObservableObject {
-    @Published private(set) var isPlaying = false
+    @Published private(set) var isPlaying = false {
+        didSet { publishWidgetMetadata() }
+    }
     @Published private(set) var currentStation: RadioStation?
-    @Published private(set) var nowPlaying = NowPlayingMetadata()
+    @Published private(set) var nowPlaying = NowPlayingMetadata() {
+        didSet { publishWidgetMetadata() }
+    }
     @Published var stations: [RadioStation] {
         didSet { persist() }
     }
@@ -195,7 +200,9 @@ final class RadioPlayer: NSObject, ObservableObject {
         metadataTask?.cancel()
         metadataTask = nil
         recordingManager.stop()
-        ArtworkPopupWindowController.shared.close()
+        if (!self.restoreArtworkPopupOnLaunch) {
+            ArtworkPopupWindowController.shared.close()
+        }
     }
 
     /// Switches the player to a given station and optionally starts playback.
@@ -747,6 +754,18 @@ final class RadioPlayer: NSObject, ObservableObject {
 
     private func startRecordingIfPossible(with fingerprint: TrackFingerprint) {
         // Recording disabled.
+    }
+
+    private func publishWidgetMetadata() {
+        let metadata = ArtworkPopupData(
+            title: nowPlaying.title,
+            artist: nowPlaying.artist,
+            album: nowPlaying.album,
+            year: nowPlaying.releaseYear,
+            releaseDate: nowPlaying.formattedReleaseDate(),
+            artworkURL: nowPlaying.artworkURL
+        )
+        WidgetMetadataStore.shared.save(metadata: metadata, isPlaying: isPlaying)
     }
 }
 

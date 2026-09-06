@@ -7,7 +7,7 @@ struct MenuBarLabelView: View {
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: player.isPlaying ? "dot.radiowaves.left.and.right" : "radio")
-            Text(player.menuBarLabel)
+            Text(player.isPlaying ? player.menuBarLabel : "")
                 .lineLimit(1)
         }
     }
