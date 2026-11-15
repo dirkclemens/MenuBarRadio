@@ -80,23 +80,65 @@ enum RadioDirectoryError: LocalizedError {
 }
 
 /// Radio Browser provider implementation.
+/// The API is served by a pool of community mirrors; the mirror is chosen via
+/// `RadioBrowserServerPool` and the next one is tried when a request fails.
 struct RadioBrowserDirectoryProvider: RadioDirectoryProvider {
     let id = "radio-browser"
     let displayName = "Radio Browser"
-    private let baseURL = URL(string: "https://de1.api.radio-browser.info")!
-    private let userAgent = AppInfo.userAgent
+    private let servers: RadioBrowserServerPool
 
-    /// Searches stations via Radio Browser JSON API.
+    init(servers: RadioBrowserServerPool = .shared) {
+        self.servers = servers
+    }
+
+    /// Searches stations via Radio Browser JSON API, failing over between mirrors.
     func searchStations(query: RadioDirectorySearchQuery) async throws -> [RadioDirectoryStation] {
-        let request = try makeRequest(query: query)
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let hosts = await servers.orderedHosts()
+        var lastError: Error = RadioDirectoryError.invalidResponse
 
-        guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
-            throw RadioDirectoryError.invalidResponse
+        for host in hosts.prefix(RadioBrowserServerPool.maxAttemptsPerRequest) {
+            guard let baseURL = URL(string: "https://\(host)") else { continue }
+            let request = try Self.makeRequest(query: query, baseURL: baseURL)
+
+            let data: Data
+            let statusCode: Int
+            do {
+                let (body, response) = try await URLSession.shared.data(for: request)
+                data = body
+                statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+            } catch let error as URLError where error.code == .cancelled {
+                throw error
+            } catch {
+                // Transport error (timeout, DNS, TLS): try the next mirror.
+                lastError = error
+                await servers.markFailed(host)
+                continue
+            }
+
+            switch statusCode {
+            case 200...299:
+                do {
+                    let stations = try Self.decodeStations(from: data)
+                    await servers.markHealthy(host)
+                    return stations
+                } catch {
+                    lastError = error
+                    await servers.markFailed(host)
+                }
+            case 400...499:
+                // The request itself is wrong; every mirror would answer the same.
+                throw RadioDirectoryError.invalidResponse
+            default:
+                lastError = RadioDirectoryError.invalidResponse
+                await servers.markFailed(host)
+            }
         }
+        throw lastError
+    }
 
-        let decoder = JSONDecoder()
-        let stations = try decoder.decode([RadioBrowserStationDTO].self, from: data)
+    /// Decodes and normalizes a Radio Browser station list.
+    static func decodeStations(from data: Data) throws -> [RadioDirectoryStation] {
+        let stations = try JSONDecoder().decode([RadioBrowserStationDTO].self, from: data)
         return stations.compactMap { dto in
             guard !dto.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
 
@@ -125,7 +167,7 @@ struct RadioBrowserDirectoryProvider: RadioDirectoryProvider {
     }
 
     /// Builds the Radio Browser query URL for name/tag/country.
-    private func makeRequest(query: RadioDirectorySearchQuery) throws -> URLRequest {
+    static func makeRequest(query: RadioDirectorySearchQuery, baseURL: URL) throws -> URLRequest {
         let text = query.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let limit = max(1, min(query.limit, 100))
         let hideBroken = query.hideBroken ? "true" : "false"
@@ -164,9 +206,101 @@ struct RadioBrowserDirectoryProvider: RadioDirectoryProvider {
         }
 
         var request = URLRequest(url: url)
-        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue(AppInfo.userAgent, forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 20
         return request
+    }
+}
+
+/// Discovers and ranks Radio Browser API mirrors.
+///
+/// The mirror list is fetched from `all.api.radio-browser.info/json/servers`
+/// (cached for a few hours). Mirrors that failed recently are moved to the end,
+/// and a working mirror is kept for subsequent requests.
+actor RadioBrowserServerPool {
+    static let shared = RadioBrowserServerPool()
+
+    /// Used when discovery itself fails.
+    static let fallbackHosts = ["de1.api.radio-browser.info", "all.api.radio-browser.info"]
+    static let maxAttemptsPerRequest = 3
+
+    private static let discoveryURL = URL(string: "https://all.api.radio-browser.info/json/servers")!
+    private let discoveryTTL: TimeInterval = 60 * 60 * 6
+    private let failurePenalty: TimeInterval = 60 * 10
+
+    private var hosts: [String] = []
+    private var discoveredAt: Date?
+    private var preferredHost: String?
+    private var failedAt: [String: Date] = [:]
+
+    /// Mirrors in the order they should be tried.
+    func orderedHosts() async -> [String] {
+        if hosts.isEmpty || discoveredAt.map({ Date().timeIntervalSince($0) > discoveryTTL }) ?? true {
+            await discover()
+        }
+        let now = Date()
+        let candidates = hosts.isEmpty ? Self.fallbackHosts : hosts
+        return Self.rank(candidates, preferred: preferredHost, failedAt: failedAt, now: now, penalty: failurePenalty)
+    }
+
+    func markHealthy(_ host: String) {
+        preferredHost = host
+        failedAt[host] = nil
+    }
+
+    func markFailed(_ host: String) {
+        failedAt[host] = Date()
+        if preferredHost == host {
+            preferredHost = nil
+        }
+    }
+
+    private func discover() async {
+        var request = URLRequest(url: Self.discoveryURL)
+        request.timeoutInterval = 10
+        request.setValue(AppInfo.userAgent, forHTTPHeaderField: "User-Agent")
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse).map({ (200...299).contains($0.statusCode) }) ?? false
+        else {
+            // Keep the previous list (or the fallback) and retry on a later search.
+            return
+        }
+        let discovered = Self.hostNames(fromServerList: data)
+        guard !discovered.isEmpty else { return }
+        hosts = discovered.shuffled()
+        discoveredAt = Date()
+        if let preferredHost, !discovered.contains(preferredHost) {
+            self.preferredHost = nil
+        }
+    }
+
+    /// Extracts unique API host names from a `/json/servers` response.
+    nonisolated static func hostNames(fromServerList data: Data) -> [String] {
+        nonisolated struct Server: Decodable { let name: String }
+        guard let servers = try? JSONDecoder().decode([Server].self, from: data) else { return [] }
+        var seen = Set<String>()
+        return servers
+            .map { $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { $0.hasSuffix(".radio-browser.info") && seen.insert($0).inserted }
+    }
+
+    /// Orders hosts: last working mirror first, recently failed mirrors last.
+    nonisolated static func rank(
+        _ hosts: [String],
+        preferred: String?,
+        failedAt: [String: Date],
+        now: Date,
+        penalty: TimeInterval
+    ) -> [String] {
+        func recentlyFailed(_ host: String) -> Bool {
+            failedAt[host].map { now.timeIntervalSince($0) < penalty } ?? false
+        }
+        var healthy = hosts.filter { !recentlyFailed($0) }
+        let failed = hosts.filter(recentlyFailed)
+        if let preferred, let index = healthy.firstIndex(of: preferred) {
+            healthy.insert(healthy.remove(at: index), at: 0)
+        }
+        return healthy + failed
     }
 }
 

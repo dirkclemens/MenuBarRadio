@@ -6,8 +6,34 @@
 import AppKit
 import SwiftUI
 
-// App entry point: installs the menu bar extra and settings window.
+/// Process entry point. When the app only hosts unit tests, a blank app is started
+/// instead so tests never start playback, touch settings or make network requests.
 @main
+enum AppEntry {
+    static let isRunningTests: Bool = {
+        let environment = ProcessInfo.processInfo.environment
+        return environment["XCTestConfigurationFilePath"] != nil
+            || environment["XCTestBundlePath"] != nil
+            || environment["XCTestSessionIdentifier"] != nil
+    }()
+
+    static func main() {
+        if isRunningTests {
+            TestHostApp.main()
+        } else {
+            MenuBarRadioApp.main()
+        }
+    }
+}
+
+/// Minimal app used as test host.
+private struct TestHostApp: App {
+    var body: some Scene {
+        Settings { EmptyView() }
+    }
+}
+
+/// Installs the menu bar extra and settings window.
 struct MenuBarRadioApp: App {
     @StateObject private var player: RadioPlayer
 
@@ -20,7 +46,7 @@ struct MenuBarRadioApp: App {
         if player.restoreArtworkPopupOnLaunch,
            ArtworkPopupWindowController.shared.wasOpenLastSession {
             DispatchQueue.main.async {
-                ArtworkPopupWindowController.shared.show(with: player)
+                ArtworkPopupWindowController.shared.show(with: player, activate: false)
             }
         }
 

@@ -41,7 +41,7 @@ Fully vibe coded / agentic coded using GPT-5.3-Codex.
 - Settings UI:
   - add/edit/delete stations
   - import/export all stations as JSON
-  - search stations via Radio Browser API
+  - search stations via Radio Browser API (automatic mirror discovery and failover)
   - pre-listen stations before adding to your list
   - set stream URL
   - set optional metadata API URL
@@ -78,6 +78,16 @@ Fully vibe coded / agentic coded using GPT-5.3-Codex.
 3. The app appears as a menu bar item.
 4. Open `Settings` from the menu popup to configure your streams.
 
+### Run the tests
+
+Press ⌘U in Xcode, or from the command line:
+
+```bash
+xcodebuild test -project MenuBarRadio.xcodeproj -scheme MenuBarRadio -destination 'platform=macOS'
+```
+
+The unit tests (Swift Testing, `MenuBarRadioTests/`) cover metadata parsing, settings migration, track matching and the Radio Browser client. While hosting tests the app starts as a blank shell, so no playback, settings or network access happens.
+
 ### Prebuilt DMG
 
 A ready-to-run build is available as `MenuBarRadio.dmg` (ad-hoc signed, Apple Silicon only). Since it isn't notarized by Apple, macOS blocks it on first launch. Remove the quarantine flag before opening:
@@ -98,6 +108,7 @@ Alternatively, right-click the app in Finder and choose "Open".
 - `Service/SettingsStore.swift`: `UserDefaults` JSON persistence.
 - `Service/AudioDeviceManager.swift`: CoreAudio output device list with hot-plug updates.
 - `Support/StreamTitleParser.swift`: ICY `StreamTitle` and "Artist - Title" parsing.
+- `Support/TrackMatching.swift`: fuzzy artist/title matching for metadata lookups.
 - `View/ContentView.swift`: menu popup layout.
 - `View/HeaderView.swift`: station picker + play/pause.
 - `View/MetadataView.swift`: now-playing metadata panel.
@@ -107,11 +118,12 @@ Alternatively, right-click the app in Finder and choose "Open".
 - `View/StationListView.swift`: station list.
 - `View/FooterActionsView.swift`: settings + quit row.
 - `View/Settings/`: settings window (stations, directory search, display/playback options).
-- `Service/RadioDirectory.swift`: provider-agnostic directory interface and Radio Browser implementation.
+- `Service/RadioDirectory.swift`: provider-agnostic directory interface and Radio Browser implementation (mirror discovery and failover).
 - `Service/MusicMetadataEnrichmentService.swift`: year/release-date/artwork enrichment with caching and throttling.
 - `Support/NowPlayingMetadata+ReleaseDate.swift`: release date formatting helpers.
 - `View/ArtworkView.swift`: now-playing artwork rendering (copy to clipboard).
 - `View/MenuBarLabelView.swift`: menu bar icon + dynamic text label.
+- `MenuBarRadioTests/`: unit tests.
 
 ## Notes
 

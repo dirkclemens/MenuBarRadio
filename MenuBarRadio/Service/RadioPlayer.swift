@@ -198,9 +198,6 @@ final class RadioPlayer: NSObject, ObservableObject {
         player.play()
         isPlaying = true
         startMetadataPollingIfNeeded()
-        if restoreArtworkPopupOnLaunch {
-            ArtworkPopupWindowController.shared.show(with: self)
-        }
     }
 
     func pause() {

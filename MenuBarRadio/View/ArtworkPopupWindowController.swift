@@ -16,10 +16,11 @@ final class ArtworkPopupWindowController {
         UserDefaults.standard.bool(forKey: wasOpenDefaultsKey)
     }
 
-    func show(with player: RadioPlayer) {
+    /// Shows the popup. `activate: false` is used for automatic restores so the
+    /// window appears without taking keyboard focus away from the frontmost app.
+    func show(with player: RadioPlayer, activate: Bool = true) {
         if let window {
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate()
+            present(window, activate: activate)
             return
         }
 
@@ -45,7 +46,6 @@ final class ArtworkPopupWindowController {
         window.title = "" //  "Now Playing"
         restoreWindowFrameIfAvailable(window)
         window.contentView = hostingView
-        window.makeKeyAndOrderFront(nil)
 
         window.backgroundColor = .clear
         window.isOpaque = false
@@ -62,9 +62,18 @@ final class ArtworkPopupWindowController {
             contentView.layer?.masksToBounds = true
         }
 
-        NSApp.activate()
         self.window = window
+        present(window, activate: activate)
         UserDefaults.standard.set(true, forKey: wasOpenDefaultsKey)
+    }
+
+    private func present(_ window: NSWindow, activate: Bool) {
+        if activate {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate()
+        } else {
+            window.orderFrontRegardless()
+        }
     }
 
     func close() {
