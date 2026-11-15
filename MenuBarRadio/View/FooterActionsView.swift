@@ -8,13 +8,14 @@ struct FooterActionsView: View {
                 Image(systemName: "gear")
                     .font(.system(size: 12))
             }
+            .help("Settings")
             Spacer()
             Button(action: { NSApp.terminate(nil) }) {
                 Image(systemName: "power")
                     .font(.system(size: 12))
             }
             .foregroundColor(.secondary)
-            .help(NSLocalizedString("QuitMenuTitle", comment: ""))
+            .help("Quit MenuBar Radio")
         }
         .font(.caption)
     }

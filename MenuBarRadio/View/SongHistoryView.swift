@@ -23,7 +23,6 @@ struct SongHistoryView: View {
                                     Text("\(Self.timeFormatter.string(from: entry.playedAt)) •")
                                         .font(.subheadline)
                                         .foregroundStyle(.secondary)
-//                                    ScrollLabelView(label: historyLine(for: entry))
                                     Text(historyLine(for: entry))
                                         .font(.subheadline)
                                         .foregroundStyle(.secondary)
@@ -50,7 +49,6 @@ struct SongHistoryView: View {
 
     private func historyLine(for entry: SongHistoryEntry) -> String {
         var parts: [String] = []
-//        parts.append(Self.timeFormatter.string(from: entry.playedAt))
         parts.append(entry.title)
         parts.append(entry.artist)
         if let album = entry.album, !album.isEmpty {

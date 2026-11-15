@@ -4,37 +4,35 @@
 //
 
 import Foundation
+import OSLog
 
 /// Fire-and-forget "is a newer version available" check against
 /// https://api.adcore.de/apps/check.php. Purely informational for now —
 /// the result is only logged, nothing else happens with it yet.
 enum UpdateChecker {
-    private static let appIdentifier = "MenuBarRadio"
     private static let endpoint = URL(string: "https://api.adcore.de/apps/check.php")!
+    nonisolated private static let log = Logger(subsystem: "de.adcore.MenuBarRadio", category: "update")
 
     static func checkForUpdate() {
-        let version = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0"
-
         var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)!
         components.queryItems = [
-            URLQueryItem(name: "app", value: appIdentifier),
-            URLQueryItem(name: "version", value: version),
+            URLQueryItem(name: "app", value: AppInfo.name),
+            URLQueryItem(name: "version", value: AppInfo.version),
             URLQueryItem(name: "os", value: ProcessInfo.processInfo.operatingSystemVersionString),
             URLQueryItem(name: "arch", value: currentArchitecture),
         ]
         guard let url = components.url else { return }
 
         var request = URLRequest(url: url)
-        request.setValue("\(appIdentifier)/\(version)", forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = 15
+        request.setValue(AppInfo.userAgent, forHTTPHeaderField: "User-Agent")
 
-        URLSession.shared.dataTask(with: request) { data, _, error in
-            guard let data, error == nil,
+        Task.detached(priority: .utility) {
+            guard let (data, _) = try? await URLSession.shared.data(for: request),
                   let result = try? JSONDecoder().decode(UpdateCheckResponse.self, from: data)
             else { return }
-            #if DEBUG
-            print("UpdateChecker: current=\(result.currentVersion ?? "?") latest=\(result.latestVersion ?? "?") updateAvailable=\(result.updateAvailable ?? false)")
-            #endif
-        }.resume()
+            log.info("current=\(result.currentVersion ?? "?", privacy: .public) latest=\(result.latestVersion ?? "?", privacy: .public) updateAvailable=\(result.updateAvailable ?? false)")
+        }
     }
 
     private static var currentArchitecture: String {
@@ -48,7 +46,7 @@ enum UpdateChecker {
     }
 }
 
-private struct UpdateCheckResponse: Decodable {
+nonisolated private struct UpdateCheckResponse: Decodable {
     let app: String?
     let currentVersion: String?
     let latestVersion: String?

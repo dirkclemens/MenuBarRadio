@@ -65,6 +65,35 @@ struct RadioStation: Identifiable, Codable, Equatable {
     }
 }
 
+extension RadioStation {
+    /// Lenient decoding: only `name` and `streamURL` are required, so hand-written
+    /// or older JSON imports (without `id`/`isFavorite`) still load.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID(),
+            name: try c.decode(String.self, forKey: .name),
+            streamURL: try c.decode(String.self, forKey: .streamURL),
+            metadataURL: try? c.decodeIfPresent(String.self, forKey: .metadataURL),
+            isFavorite: (try? c.decodeIfPresent(Bool.self, forKey: .isFavorite)) ?? false,
+            codec: try? c.decodeIfPresent(String.self, forKey: .codec),
+            bitrate: try? c.decodeIfPresent(Int.self, forKey: .bitrate),
+            votes: try? c.decodeIfPresent(Int.self, forKey: .votes),
+            tags: try? c.decodeIfPresent(String.self, forKey: .tags),
+            country: try? c.decodeIfPresent(String.self, forKey: .country),
+            countryCode: try? c.decodeIfPresent(String.self, forKey: .countryCode),
+            state: try? c.decodeIfPresent(String.self, forKey: .state),
+            language: try? c.decodeIfPresent(String.self, forKey: .language),
+            languageCodes: try? c.decodeIfPresent(String.self, forKey: .languageCodes),
+            homepageURL: try? c.decodeIfPresent(URL.self, forKey: .homepageURL),
+            faviconURL: try? c.decodeIfPresent(URL.self, forKey: .faviconURL),
+            geoLatitude: try? c.decodeIfPresent(Double.self, forKey: .geoLatitude),
+            geoLongitude: try? c.decodeIfPresent(Double.self, forKey: .geoLongitude),
+            geoDistance: try? c.decodeIfPresent(Double.self, forKey: .geoDistance)
+        )
+    }
+}
+
 /// Live now-playing metadata derived from streams and enrichment services.
 struct NowPlayingMetadata: Codable, Equatable {
     var artist: String?
@@ -88,6 +117,19 @@ struct NowPlayingMetadata: Codable, Equatable {
         self.year = year
         self.artworkURL = artworkURL
         self.extra = extra
+    }
+
+    /// Keys in `extra` that are used for internal bookkeeping and not meant for display.
+    static let internalExtraKeys: Set<String> = [
+        "enrichment_key", "enrichment_source", "enrichment_confidence", "artwork_source_url"
+    ]
+
+    /// User-facing `key: value` lines from `extra`, sorted by key.
+    var displayExtraLines: [String] {
+        extra
+            .filter { !Self.internalExtraKeys.contains($0.key) }
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key): \($0.value)" }
     }
 }
 
@@ -130,6 +172,18 @@ struct MenuBarDisplayConfiguration: Codable, Equatable {
     var showYear: Bool = false
     var showStationNameFallback: Bool = true
     var maxLength: Int = 36
+
+    init() {}
+
+    /// Lenient decoding so that adding new options never invalidates stored settings.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        showArtist = (try? c.decodeIfPresent(Bool.self, forKey: .showArtist)) ?? true
+        showTitle = (try? c.decodeIfPresent(Bool.self, forKey: .showTitle)) ?? true
+        showYear = (try? c.decodeIfPresent(Bool.self, forKey: .showYear)) ?? false
+        showStationNameFallback = (try? c.decodeIfPresent(Bool.self, forKey: .showStationNameFallback)) ?? true
+        maxLength = (try? c.decodeIfPresent(Int.self, forKey: .maxLength)) ?? 36
+    }
 }
 
 /// Persisted app settings stored in UserDefaults.
@@ -141,11 +195,13 @@ struct AppSettings: Codable {
     var metadataRefreshSeconds: Double
     var autoPlayOnLaunch: Bool
     var restoreArtworkPopupOnLaunch: Bool
-    var selectedOutputDeviceID: UInt32
+    /// CoreAudio device UID (stable across reboots/reconnects). `nil` = system default.
+    var selectedOutputDeviceUID: String?
+    /// Legacy numeric CoreAudio device ID from versions ≤ 1.0.2, read only for migration.
+    var legacyOutputDeviceID: UInt32?
     var showDockIcon: Bool
     var songHistoryLimit: Int
     var songHistory: [SongHistoryEntry]
-    var recordTracks: Bool
 
     enum CodingKeys: String, CodingKey {
         case stations
@@ -155,11 +211,11 @@ struct AppSettings: Codable {
         case metadataRefreshSeconds
         case autoPlayOnLaunch
         case restoreArtworkPopupOnLaunch
+        case selectedOutputDeviceUID
         case selectedOutputDeviceID
         case showDockIcon
         case songHistoryLimit
         case songHistory
-        case recordTracks
     }
 
     init(
@@ -170,11 +226,10 @@ struct AppSettings: Codable {
         metadataRefreshSeconds: Double,
         autoPlayOnLaunch: Bool,
         restoreArtworkPopupOnLaunch: Bool,
-        selectedOutputDeviceID: UInt32,
+        selectedOutputDeviceUID: String?,
         showDockIcon: Bool,
         songHistoryLimit: Int,
-        songHistory: [SongHistoryEntry],
-        recordTracks: Bool
+        songHistory: [SongHistoryEntry]
     ) {
         self.stations = stations
         self.selectedStationID = selectedStationID
@@ -183,27 +238,45 @@ struct AppSettings: Codable {
         self.metadataRefreshSeconds = metadataRefreshSeconds
         self.autoPlayOnLaunch = autoPlayOnLaunch
         self.restoreArtworkPopupOnLaunch = restoreArtworkPopupOnLaunch
-        self.selectedOutputDeviceID = selectedOutputDeviceID
+        self.selectedOutputDeviceUID = selectedOutputDeviceUID
+        self.legacyOutputDeviceID = nil
         self.showDockIcon = showDockIcon
         self.songHistoryLimit = songHistoryLimit
         self.songHistory = songHistory
-        self.recordTracks = recordTracks
     }
 
+    /// Every field falls back to its default, so a single malformed or newly added
+    /// value never discards the user's station list.
     init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        stations = try container.decode([RadioStation].self, forKey: .stations)
-        selectedStationID = try container.decodeIfPresent(UUID.self, forKey: .selectedStationID)
-        menuBarDisplay = try container.decode(MenuBarDisplayConfiguration.self, forKey: .menuBarDisplay)
-        volume = try container.decode(Float.self, forKey: .volume)
-        metadataRefreshSeconds = try container.decode(Double.self, forKey: .metadataRefreshSeconds)
-        autoPlayOnLaunch = try container.decodeIfPresent(Bool.self, forKey: .autoPlayOnLaunch) ?? false
-        restoreArtworkPopupOnLaunch = try container.decodeIfPresent(Bool.self, forKey: .restoreArtworkPopupOnLaunch) ?? false
-        selectedOutputDeviceID = try container.decodeIfPresent(UInt32.self, forKey: .selectedOutputDeviceID) ?? 0
-        showDockIcon = try container.decodeIfPresent(Bool.self, forKey: .showDockIcon) ?? false
-        songHistoryLimit = try container.decodeIfPresent(Int.self, forKey: .songHistoryLimit) ?? 10
-        songHistory = try container.decodeIfPresent([SongHistoryEntry].self, forKey: .songHistory) ?? []
-        recordTracks = try container.decodeIfPresent(Bool.self, forKey: .recordTracks) ?? false
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = AppSettings.defaults
+        stations = (try? c.decodeIfPresent([RadioStation].self, forKey: .stations)) ?? d.stations
+        selectedStationID = try? c.decodeIfPresent(UUID.self, forKey: .selectedStationID)
+        menuBarDisplay = (try? c.decodeIfPresent(MenuBarDisplayConfiguration.self, forKey: .menuBarDisplay)) ?? d.menuBarDisplay
+        volume = (try? c.decodeIfPresent(Float.self, forKey: .volume)) ?? d.volume
+        metadataRefreshSeconds = (try? c.decodeIfPresent(Double.self, forKey: .metadataRefreshSeconds)) ?? d.metadataRefreshSeconds
+        autoPlayOnLaunch = (try? c.decodeIfPresent(Bool.self, forKey: .autoPlayOnLaunch)) ?? d.autoPlayOnLaunch
+        restoreArtworkPopupOnLaunch = (try? c.decodeIfPresent(Bool.self, forKey: .restoreArtworkPopupOnLaunch)) ?? d.restoreArtworkPopupOnLaunch
+        selectedOutputDeviceUID = try? c.decodeIfPresent(String.self, forKey: .selectedOutputDeviceUID)
+        legacyOutputDeviceID = try? c.decodeIfPresent(UInt32.self, forKey: .selectedOutputDeviceID)
+        showDockIcon = (try? c.decodeIfPresent(Bool.self, forKey: .showDockIcon)) ?? d.showDockIcon
+        songHistoryLimit = (try? c.decodeIfPresent(Int.self, forKey: .songHistoryLimit)) ?? d.songHistoryLimit
+        songHistory = (try? c.decodeIfPresent([SongHistoryEntry].self, forKey: .songHistory)) ?? []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(stations, forKey: .stations)
+        try c.encodeIfPresent(selectedStationID, forKey: .selectedStationID)
+        try c.encode(menuBarDisplay, forKey: .menuBarDisplay)
+        try c.encode(volume, forKey: .volume)
+        try c.encode(metadataRefreshSeconds, forKey: .metadataRefreshSeconds)
+        try c.encode(autoPlayOnLaunch, forKey: .autoPlayOnLaunch)
+        try c.encode(restoreArtworkPopupOnLaunch, forKey: .restoreArtworkPopupOnLaunch)
+        try c.encodeIfPresent(selectedOutputDeviceUID, forKey: .selectedOutputDeviceUID)
+        try c.encode(showDockIcon, forKey: .showDockIcon)
+        try c.encode(songHistoryLimit, forKey: .songHistoryLimit)
+        try c.encode(songHistory, forKey: .songHistory)
     }
 
     static let defaults = AppSettings(
@@ -218,10 +291,9 @@ struct AppSettings: Codable {
         metadataRefreshSeconds: 15,
         autoPlayOnLaunch: false,
         restoreArtworkPopupOnLaunch: false,
-        selectedOutputDeviceID: 0,
+        selectedOutputDeviceUID: nil,
         showDockIcon: false,
         songHistoryLimit: 10,
-        songHistory: [],
-        recordTracks: false
+        songHistory: []
     )
 }

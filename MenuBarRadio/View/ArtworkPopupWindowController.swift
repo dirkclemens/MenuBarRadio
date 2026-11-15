@@ -19,7 +19,7 @@ final class ArtworkPopupWindowController {
     func show(with player: RadioPlayer) {
         if let window {
             window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            NSApp.activate()
             return
         }
 
@@ -45,15 +45,13 @@ final class ArtworkPopupWindowController {
         window.title = "" //  "Now Playing"
         restoreWindowFrameIfAvailable(window)
         window.contentView = hostingView
-        window.makeKeyAndOrderFront(nil)        
+        window.makeKeyAndOrderFront(nil)
 
         window.backgroundColor = .clear
-//        window.backgroundColor = NSColor.gray.withAlphaComponent(0.25)
         window.isOpaque = false
         window.hasShadow = true
         window.invalidateShadow()
 
-        //        window.collectionBehavior.insert(.canJoinAllSpaces)
         window.collectionBehavior.insert(.moveToActiveSpace)
         window.setFrameAutosaveName("MenuBarRadioArtworkPopupWindow")
         window.minSize = NSSize(width: 320, height: 380)
@@ -63,11 +61,8 @@ final class ArtworkPopupWindowController {
             contentView.layer?.cornerRadius = 16
             contentView.layer?.masksToBounds = true
         }
-        
-//        window.contentView?.layer?.state = .active
-//        window.contentView?.layer?.material = .light
 
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activate()
         self.window = window
         UserDefaults.standard.set(true, forKey: wasOpenDefaultsKey)
     }

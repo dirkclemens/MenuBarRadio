@@ -8,8 +8,8 @@ struct MetadataView: View {
 
     var body: some View {
         
-        let extraLines = player.nowPlaying.extra.sorted(by: { $0.key < $1.key }).map { "\($0.key): \($0.value)" }
-        
+        let extraLines = player.nowPlaying.displayExtraLines
+
         HStack(alignment: .top, spacing: 12) {
             ArtworkView(metadata: player.nowPlaying)
             VStack(alignment: .leading, spacing: 4) {
@@ -21,7 +21,7 @@ struct MetadataView: View {
                     .bold()
                     .lineLimit(1)
                 if let album = player.nowPlaying.album, !album.isEmpty {
-                    Text("Album: \(player.nowPlaying.album ?? "No album metadata")")
+                    Text("Album: \(album)")
                         .font(.subheadline)
                         .lineLimit(2)
                 }
@@ -41,12 +41,22 @@ struct MetadataView: View {
                 Divider().frame(height: 1).background(.windowBackground)
                 
                 if let station = player.currentStation {
-                    let url = URL(string: station.streamURL)!
-                    Link(station.name.isEmpty ? "Unknown Station" : "Station: \(station.name)", destination: url)
+                    let label = station.name.isEmpty ? "Unknown Station" : "Station: \(station.name)"
+                    if let url = station.homepageURL ?? URL(string: station.streamURL) {
+                        Link(label, destination: url)
+                            .font(.caption)
+                            .multilineTextAlignment(.leading)
+                            .foregroundColor(.blue)
+                    } else {
+                        Text(label)
+                            .font(.caption)
+                    }
+                }
+                if let error = player.playbackError {
+                    Label(error, systemImage: "exclamationmark.triangle")
                         .font(.caption)
-                        .multilineTextAlignment(.leading)
-                        .frame(alignment: .leading)
-                        .foregroundColor(.blue)
+                        .foregroundStyle(.orange)
+                        .lineLimit(2)
                 }
                 if let tags = player.currentStation?.tags, !tags.isEmpty {
                     Text("Tags: \(tags)")
@@ -74,21 +84,16 @@ struct MetadataView: View {
                             .font(.caption)
                     }
                 }
-                HStack{
-                    if let title = player.nowPlaying.title,
-                       let artist = player.nowPlaying.artist {
-
-                        let query = "\(title) \(artist)"
-                        let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-
-                        // For Apple Music, we can just do a search query with the title and artist combined.
-                        Link("Apple Music", destination: URL(string: "https://music.apple.com/search?term=\(encodedQuery)")!)
-                            .font(.caption)
-
-                        // For Spotify, we can just do a search query with the title and artist combined.
-                        let url = URL(string: "https://open.spotify.com/search/\(encodedQuery)") ?? URL(string: "https://open.spotify.com")!
-                        Link("Spotify", destination: url)
-                            .font(.caption)
+                if let query = searchQuery {
+                    HStack {
+                        if let url = Self.appleMusicSearchURL(query) {
+                            Link("Apple Music", destination: url)
+                                .font(.caption)
+                        }
+                        if let url = Self.spotifySearchURL(query) {
+                            Link("Spotify", destination: url)
+                                .font(.caption)
+                        }
                     }
                 }
             }
@@ -96,6 +101,25 @@ struct MetadataView: View {
             .help(extraLines.joined(separator: "\n"))
 //            Spacer(minLength: 0)
         }
+    }
+
+    /// "Title Artist" when both are known, used for streaming-service search links.
+    private var searchQuery: String? {
+        guard let title = lyricsTrackName, let artist = lyricsArtistName else { return nil }
+        return "\(title) \(artist)"
+    }
+
+    private static func appleMusicSearchURL(_ query: String) -> URL? {
+        var components = URLComponents(string: "https://music.apple.com/search")
+        components?.queryItems = [URLQueryItem(name: "term", value: query)]
+        return components?.url
+    }
+
+    private static func spotifySearchURL(_ query: String) -> URL? {
+        // Path component: encode everything except unreserved characters (also "/", "&", "?", "#").
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
+        guard let encoded = query.addingPercentEncoding(withAllowedCharacters: allowed) else { return nil }
+        return URL(string: "https://open.spotify.com/search/\(encoded)")
     }
 
     private var lyricsQuery: String? {
@@ -147,26 +171,17 @@ struct MetadataView: View {
             lyricsState = .error("Missing artist or title.")
             return
         }
-        NSLog("Lyrics lookup start: \(query)")
         lyricsState = .loading
         Task {
             do {
                 let results = try await fetchLyrics(query: query, trackName: lyricsTrackName, artistName: lyricsArtistName)
-                NSLog("Lyrics lookup results: \(results.count)")
-                let best = results.first { ($0.plainLyrics?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false) }
-                let lyrics = best?.plainLyrics?.trimmingCharacters(in: .whitespacesAndNewlines)
-                await MainActor.run {
-                    if let lyrics, !lyrics.isEmpty {
-                        lyricsState = .loaded(lyrics)
-                    } else {
-                        lyricsState = .error("No lyrics found.")
-                    }
-                }
+                let lyrics = results
+                    .lazy
+                    .compactMap { $0.plainLyrics?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .first { !$0.isEmpty }
+                lyricsState = lyrics.map(LyricsState.loaded) ?? .error("No lyrics found.")
             } catch {
-                NSLog("Lyrics lookup failed: \(error.localizedDescription)")
-                await MainActor.run {
-                    lyricsState = .error("Lyrics lookup failed.")
-                }
+                lyricsState = .error("Lyrics lookup failed: \(error.localizedDescription)")
             }
         }
     }

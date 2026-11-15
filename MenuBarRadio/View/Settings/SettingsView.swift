@@ -1,5 +1,8 @@
+import OSLog
 import SwiftUI
 import UniformTypeIdentifiers
+
+private let log = Logger(subsystem: "de.adcore.MenuBarRadio", category: "settings")
 
 /// Settings window with stations, directory search, and display options.
 struct SettingsView: View {
@@ -45,12 +48,26 @@ struct SettingsView: View {
         .onAppear {
             selectedStationID = player.currentStation?.id ?? player.stations.first?.id
             directory.previewVolume = player.volume
+            directory.outputDeviceUID = player.effectiveOutputDeviceUID
             if directory.results.isEmpty {
                 Task { await directory.search() }
             }
         }
+        .onDisappear {
+            // Closing Settings must not leave a pre-listen stream playing in the background.
+            if directory.previewingStationID != nil {
+                directory.stopPreview()
+                if wasPlayingBeforePreview {
+                    player.play()
+                    wasPlayingBeforePreview = false
+                }
+            }
+        }
         .onChange(of: player.volume) { _, newValue in
             directory.previewVolume = newValue
+        }
+        .onChange(of: player.selectedOutputDeviceUID) { _, _ in
+            directory.outputDeviceUID = player.effectiveOutputDeviceUID
         }
         .alert("Import Failed", isPresented: Binding(
             get: { importErrorMessage != nil },
@@ -65,15 +82,6 @@ struct SettingsView: View {
             allowedContentTypes: [.json],
             allowsMultipleSelection: false,
             onCompletion: handleImportResult
-        )
-    }
-
-    private var selectedStationBinding: Binding<RadioStation>? {
-        guard let id = selectedStationID else { return nil }
-        guard let index = player.stations.firstIndex(where: { $0.id == id }) else { return nil }
-        return Binding(
-            get: { player.stations[index] },
-            set: { player.stations[index] = $0 }
         )
     }
 
@@ -173,19 +181,6 @@ struct SettingsView: View {
             geoLongitude: directoryStation.geoLongitude,
             geoDistance: directoryStation.geoDistance
         )
-        NSLog(
-            "Directory station details: country=%@ countryCode=%@ state=%@ language=%@ languageCodes=%@ homepage=%@ favicon=%@ geo_lat=%@ geo_long=%@ geo_distance=%@",
-            station.country ?? "nil",
-            station.countryCode ?? "nil",
-            station.state ?? "nil",
-            station.language ?? "nil",
-            station.languageCodes ?? "nil",
-            station.homepageURL?.absoluteString ?? "nil",
-            station.faviconURL?.absoluteString ?? "nil",
-            station.geoLatitude.map { String($0) } ?? "nil",
-            station.geoLongitude.map { String($0) } ?? "nil",
-            station.geoDistance.map { String($0) } ?? "nil"
-        )
         player.appendStation(station)
         selectedStationID = station.id
     }
@@ -203,12 +198,11 @@ struct SettingsView: View {
         do {
             let results = try await provider.searchStations(query: query)
             guard let match = bestDirectoryMatch(for: station, in: results) else { return }
-            let updated = mergeStation(station, with: match)
-            await MainActor.run {
-                player.updateStation(updated)
-            }
+            // Merge into the *current* version so edits made while the request ran aren't lost.
+            let latest = player.stations.first { $0.id == station.id } ?? station
+            player.updateStation(mergeStation(latest, with: match))
         } catch {
-            NSLog("Refresh details failed for \(station.name): \(error.localizedDescription)")
+            log.error("Refresh details failed for \(station.name): \(error.localizedDescription, privacy: .public)")
         }
     }
 

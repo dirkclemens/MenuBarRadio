@@ -84,7 +84,7 @@ struct RadioBrowserDirectoryProvider: RadioDirectoryProvider {
     let id = "radio-browser"
     let displayName = "Radio Browser"
     private let baseURL = URL(string: "https://de1.api.radio-browser.info")!
-    private let userAgent = "MenuBarRadio/1.0"
+    private let userAgent = AppInfo.userAgent
 
     /// Searches stations via Radio Browser JSON API.
     func searchStations(query: RadioDirectorySearchQuery) async throws -> [RadioDirectoryStation] {
@@ -183,12 +183,17 @@ final class RadioDirectoryController: ObservableObject {
     @Published var previewVolume: Float = 0.8 {
         didSet { previewPlayer.volume = previewVolume }
     }
+    /// Output device for pre-listening (mirrors the main player's selection).
+    var outputDeviceUID: String? {
+        didSet { previewPlayer.audioOutputDeviceUniqueID = outputDeviceUID }
+    }
 
     let providerName: String
 
     private let provider: any RadioDirectoryProvider
     private let previewPlayer = AVPlayer()
-    private var previewStatusObserver: NSKeyValueObservation?
+    private var previewStatusObserver: AnyCancellable?
+    private var previewStallCheck: Task<Void, Never>?
 
     init(provider: any RadioDirectoryProvider) {
         self.provider = provider
@@ -227,27 +232,25 @@ final class RadioDirectoryController: ObservableObject {
             return
         }
 
-        let item = makePreviewItem(for: url)
-        previewStatusObserver?.invalidate()
-        previewStatusObserver = item.observe(\.status, options: [.new]) { [weak self] item, _ in
-            guard let self else { return }
-            if item.status == .failed {
-                Task { @MainActor in
-                    self.errorMessage = "Preview failed: \(item.error?.localizedDescription ?? "Unknown stream error")"
-                    self.stopPreview()
-                }
+        let item = RadioPlayer.makePlayerItem(for: url)
+        errorMessage = nil
+        previewStatusObserver = item.publisher(for: \.status)
+            .filter { $0 == .failed }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self, weak item] _ in
+                self?.errorMessage = "Preview failed: \(item?.error?.localizedDescription ?? "Unknown stream error")"
+                self?.stopPreview()
             }
-        }
         previewPlayer.replaceCurrentItem(with: item)
         previewPlayer.isMuted = false
         previewPlayer.volume = previewVolume
         previewPlayer.playImmediately(atRate: 1.0)
         previewingStationID = station.id
 
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            guard self.previewingStationID == station.id else { return }
+        previewStallCheck?.cancel()
+        previewStallCheck = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            guard let self, !Task.isCancelled, self.previewingStationID == station.id else { return }
             if self.previewPlayer.timeControlStatus != .playing {
                 self.errorMessage = "Preview stalled: stream may be unavailable."
             }
@@ -259,27 +262,9 @@ final class RadioDirectoryController: ObservableObject {
         previewPlayer.pause()
         previewPlayer.replaceCurrentItem(with: nil)
         previewingStationID = nil
-        previewStatusObserver?.invalidate()
         previewStatusObserver = nil
-    }
-
-    /// Builds a preview item with stream-friendly headers.
-    private func makePreviewItem(for url: URL) -> AVPlayerItem {
-        let headers = [
-            "User-Agent": "MenuBarRadio/1.0",
-            "Icy-MetaData": "1"
-        ]
-        let asset = AVURLAsset(
-            url: url,
-            options: [
-                "AVURLAssetHTTPHeaderFieldsKey": headers,
-                "AVURLAssetHTTPUserAgentKey": "MenuBarRadio/1.0"
-            ]
-        )
-        let item = AVPlayerItem(asset: asset)
-        item.preferredForwardBufferDuration = 2
-        item.canUseNetworkResourcesForLiveStreamingWhilePaused = false
-        return item
+        previewStallCheck?.cancel()
+        previewStallCheck = nil
     }
 }
 

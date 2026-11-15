@@ -1,7 +1,7 @@
 import Foundation
 
 /// Enriched track metadata used to augment now-playing information.
-struct TrackEnrichmentResult: Codable {
+nonisolated struct TrackEnrichmentResult: Codable, Sendable {
     let artist: String
     let title: String
     let album: String?
@@ -15,13 +15,18 @@ struct TrackEnrichmentResult: Codable {
 /// Fetches release year and artwork from free, no-key services with caching.
 actor MusicMetadataEnrichmentService {
     private struct CachedValue: Codable {
-        let result: TrackEnrichmentResult
+        /// `nil` = looked up successfully but nothing matched (negative cache).
+        let result: TrackEnrichmentResult?
         let expiresAt: Date
     }
 
     private let session: URLSession
-    private let userAgent = "MenuBarRadio/1.0 (radio metadata enrichment)"
+    private let userAgent = "\(AppInfo.userAgent) (radio metadata enrichment)"
     private let cacheTTL: TimeInterval = 60 * 60 * 24 * 30
+    /// Misses (jingles, ads, obscure tracks) are retried after a day instead of on every play.
+    private let missTTL: TimeInterval = 60 * 60 * 24
+    private let maxCacheEntries = 1_000
+    private let maxCoverArtReleaseLookups = 3
     private let storageKey = "MenuBarRadio.TrackEnrichmentCache"
     private var cache: [String: CachedValue]
     private var lastRequestAt: Date?
@@ -42,39 +47,60 @@ actor MusicMetadataEnrichmentService {
             return cached.result
         }
 
-        let musicBrainzResult = await queryMusicBrainz(artist: artist, title: title)
-        let iTunesResult = await queryITunes(artist: artist, title: title)
+        var hadNetworkError = false
 
-        if var result = musicBrainzResult {
-            if result.artworkURL == nil, let iTunesArtwork = iTunesResult?.artworkURL {
+        var musicBrainzResult: TrackEnrichmentResult?
+        do {
+            musicBrainzResult = try await queryMusicBrainz(artist: artist, title: title)
+        } catch {
+            hadNetworkError = true
+        }
+        if Task.isCancelled { return nil }
+
+        // iTunes is only needed when MusicBrainz found nothing or has no cover art.
+        var iTunesResult: TrackEnrichmentResult?
+        if musicBrainzResult?.artworkURL == nil {
+            do {
+                iTunesResult = try await queryITunes(artist: artist, title: title)
+            } catch {
+                hadNetworkError = true
+            }
+        }
+        if Task.isCancelled { return nil }
+
+        let result: TrackEnrichmentResult?
+        if let mb = musicBrainzResult {
+            if mb.artworkURL == nil, let iTunes = iTunesResult, let artwork = iTunes.artworkURL {
                 result = TrackEnrichmentResult(
-                    artist: result.artist,
-                    title: result.title,
-                    album: result.album ?? iTunesResult?.album,
-                    year: result.year ?? iTunesResult?.year,
-                    releaseDate: result.releaseDate ?? iTunesResult?.releaseDate,
-                    artworkURL: iTunesArtwork,
-                    confidence: result.confidence,
+                    artist: mb.artist,
+                    title: mb.title,
+                    album: mb.album ?? iTunes.album,
+                    year: mb.year ?? iTunes.year,
+                    releaseDate: mb.releaseDate ?? iTunes.releaseDate,
+                    artworkURL: artwork,
+                    confidence: mb.confidence,
                     source: "MusicBrainz+iTunesArtwork"
                 )
+            } else {
+                result = mb
             }
-            cache[key] = CachedValue(result: result, expiresAt: Date().addingTimeInterval(cacheTTL))
-            saveCache()
-            return result
+        } else {
+            result = iTunesResult
         }
 
-        if let result = iTunesResult {
-            cache[key] = CachedValue(result: result, expiresAt: Date().addingTimeInterval(cacheTTL))
+        // Don't remember a miss that may only be caused by a network problem.
+        if result != nil || !hadNetworkError {
+            let ttl = result == nil ? missTTL : cacheTTL
+            cache[key] = CachedValue(result: result, expiresAt: Date().addingTimeInterval(ttl))
             saveCache()
-            return result
         }
-
-        return nil
+        return result
     }
 
     /// Queries MusicBrainz recordings and optionally resolves cover art.
-    private func queryMusicBrainz(artist: String, title: String) async -> TrackEnrichmentResult? {
-        let queryString = "recording:\"\(title)\" AND artist:\"\(artist)\""
+    /// Throws on transport/HTTP errors, returns `nil` when nothing matches.
+    private func queryMusicBrainz(artist: String, title: String) async throws -> TrackEnrichmentResult? {
+        let queryString = "recording:\"\(Self.luceneEscaped(title))\" AND artist:\"\(Self.luceneEscaped(artist))\""
         guard var components = URLComponents(string: "https://musicbrainz.org/ws/2/recording/") else { return nil }
         components.queryItems = [
             URLQueryItem(name: "query", value: queryString),
@@ -83,47 +109,39 @@ actor MusicMetadataEnrichmentService {
         ]
         guard let url = components.url else { return nil }
 
-        do {
-            try await throttleRequests()
-            var request = URLRequest(url: url)
-            request.timeoutInterval = 20
-            request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-            let (data, response) = try await session.data(for: request)
-            guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else { return nil }
-            let payload = try JSONDecoder().decode(MusicBrainzResponse.self, from: data)
+        let data = try await fetch(url)
+        let payload = try JSONDecoder().decode(MusicBrainzResponse.self, from: data)
 
-            let candidates = payload.recordings.compactMap { recording -> MusicBrainzCandidate? in
-                let confidence = scoreCandidate(
-                    candidateArtist: recording.artistCredit.first?.name ?? "",
-                    candidateTitle: recording.title,
-                    targetArtist: artist,
-                    targetTitle: title,
-                    providerScore: Double(recording.score ?? "") ?? 0
-                )
-                guard confidence >= 0.5 else { return nil }
-                return MusicBrainzCandidate(recording: recording, confidence: confidence)
-            }
-
-            guard let best = candidates.max(by: { $0.confidence < $1.confidence }) else { return nil }
-            let artwork = await fetchMusicBrainzArtwork(for: best.recording)
-            let date = best.recording.firstReleaseDate
-            return TrackEnrichmentResult(
-                artist: artist,
-                title: title,
-                album: best.recording.primaryReleaseTitle ?? best.recording.primaryReleaseGroupTitle,
-                year: Self.yearFromDate(date),
-                releaseDate: date,
-                artworkURL: artwork,
-                confidence: best.confidence,
-                source: "MusicBrainz"
+        let candidates = payload.recordings.compactMap { recording -> MusicBrainzCandidate? in
+            let confidence = scoreCandidate(
+                candidateArtist: recording.artistCredit.first?.name ?? "",
+                candidateTitle: recording.title,
+                targetArtist: artist,
+                targetTitle: title,
+                providerScore: Double(recording.score ?? "") ?? 0
             )
-        } catch {
-            return nil
+            guard confidence >= 0.5 else { return nil }
+            return MusicBrainzCandidate(recording: recording, confidence: confidence)
         }
+
+        guard let best = candidates.max(by: { $0.confidence < $1.confidence }) else { return nil }
+        let artwork = await fetchMusicBrainzArtwork(for: best.recording)
+        let date = best.recording.firstReleaseDate
+        return TrackEnrichmentResult(
+            artist: artist,
+            title: title,
+            album: best.recording.primaryReleaseTitle ?? best.recording.primaryReleaseGroupTitle,
+            year: Self.yearFromDate(date),
+            releaseDate: date,
+            artworkURL: artwork,
+            confidence: best.confidence,
+            source: "MusicBrainz"
+        )
     }
 
     /// Queries iTunes Search for release date and artwork.
-    private func queryITunes(artist: String, title: String) async -> TrackEnrichmentResult? {
+    /// Throws on transport/HTTP errors, returns `nil` when nothing matches.
+    private func queryITunes(artist: String, title: String) async throws -> TrackEnrichmentResult? {
         guard var components = URLComponents(string: "https://itunes.apple.com/search") else { return nil }
         components.queryItems = [
             URLQueryItem(name: "term", value: "\(artist) \(title)"),
@@ -132,41 +150,45 @@ actor MusicMetadataEnrichmentService {
         ]
         guard let url = components.url else { return nil }
 
-        do {
-            try await throttleRequests()
-            var request = URLRequest(url: url)
-            request.timeoutInterval = 20
-            request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-            let (data, response) = try await session.data(for: request)
-            guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else { return nil }
-            let payload = try JSONDecoder().decode(ITunesResponse.self, from: data)
+        let data = try await fetch(url)
+        let payload = try JSONDecoder().decode(ITunesResponse.self, from: data)
 
-            let candidates = payload.results.compactMap { track -> TrackEnrichmentResult? in
-                let confidence = scoreCandidate(
-                    candidateArtist: track.artistName,
-                    candidateTitle: track.trackName,
-                    targetArtist: artist,
-                    targetTitle: title,
-                    providerScore: 100
-                )
-                guard confidence >= 0.5 else { return nil }
+        let candidates = payload.results.compactMap { track -> TrackEnrichmentResult? in
+            let confidence = scoreCandidate(
+                candidateArtist: track.artistName,
+                candidateTitle: track.trackName,
+                targetArtist: artist,
+                targetTitle: title,
+                providerScore: 100
+            )
+            guard confidence >= 0.5 else { return nil }
 
-                return TrackEnrichmentResult(
-                    artist: artist,
-                    title: title,
-                    album: track.collectionName,
-                    year: Self.yearFromDate(track.releaseDate),
-                    releaseDate: track.releaseDate,
-                    artworkURL: track.bestArtworkURL,
-                    confidence: confidence,
-                    source: "iTunes"
-                )
-            }
-
-            return candidates.max(by: { $0.confidence < $1.confidence })
-        } catch {
-            return nil
+            return TrackEnrichmentResult(
+                artist: artist,
+                title: title,
+                album: track.collectionName,
+                year: Self.yearFromDate(track.releaseDate),
+                releaseDate: track.releaseDate,
+                artworkURL: track.bestArtworkURL,
+                confidence: confidence,
+                source: "iTunes"
+            )
         }
+
+        return candidates.max(by: { $0.confidence < $1.confidence })
+    }
+
+    /// Rate-limited GET with the app's User-Agent; throws for non-2xx responses.
+    private func fetch(_ url: URL) async throws -> Data {
+        try await throttleRequests()
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 20
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
+            throw URLError(.badServerResponse)
+        }
+        return data
     }
 
     /// Attempts to resolve Cover Art Archive artwork for a recording.
@@ -176,44 +198,29 @@ actor MusicMetadataEnrichmentService {
             return coverURL
         }
 
-        guard let lookupURL = URL(string: "https://musicbrainz.org/ws/2/recording/\(recording.id)?inc=releases&fmt=json") else { return nil }
-        do {
-            try await throttleRequests()
-            var request = URLRequest(url: lookupURL)
-            request.timeoutInterval = 20
-            request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-            let (data, response) = try await session.data(for: request)
-            guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else { return nil }
-            let lookup = try JSONDecoder().decode(MusicBrainzRecordingLookupResponse.self, from: data)
-            for release in lookup.releases {
-                if let cover = await fetchCoverArtArchiveURL(releaseID: release.id) {
-                    return cover
-                }
+        guard let lookupURL = URL(string: "https://musicbrainz.org/ws/2/recording/\(recording.id)?inc=releases&fmt=json"),
+              let data = try? await fetch(lookupURL),
+              let lookup = try? JSONDecoder().decode(MusicBrainzRecordingLookupResponse.self, from: data)
+        else { return nil }
+
+        // Each lookup is rate-limited to ~1/s, so only try the first few releases.
+        for release in lookup.releases.prefix(maxCoverArtReleaseLookups) {
+            if Task.isCancelled { return nil }
+            if let cover = await fetchCoverArtArchiveURL(releaseID: release.id) {
+                return cover
             }
-        } catch {
-            return nil
         }
         return nil
     }
 
-    /// Resolves a release ID into a cover art URL.
+    /// Resolves a release ID into a cover art URL (404 = release has no artwork).
     private func fetchCoverArtArchiveURL(releaseID: String) async -> URL? {
-        guard let url = URL(string: "https://coverartarchive.org/release/\(releaseID)") else { return nil }
-        do {
-            try await throttleRequests()
-            var request = URLRequest(url: url)
-            request.timeoutInterval = 20
-            request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-            let (data, response) = try await session.data(for: request)
-            guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else { return nil }
-            let payload = try JSONDecoder().decode(CoverArtArchiveResponse.self, from: data)
-            if let front = payload.images.first(where: { $0.front == true }) {
-                return front.thumbnails?.large ?? front.thumbnails?.small ?? front.image
-            }
-        } catch {
-            return nil
-        }
-        return nil
+        guard let url = URL(string: "https://coverartarchive.org/release/\(releaseID)"),
+              let data = try? await fetch(url),
+              let payload = try? JSONDecoder().decode(CoverArtArchiveResponse.self, from: data),
+              let front = payload.images.first(where: { $0.front == true })
+        else { return nil }
+        return front.thumbnails?.large ?? front.thumbnails?.small ?? front.image
     }
 
     /// Enforces ~1 request/second for free API compliance.
@@ -221,8 +228,7 @@ actor MusicMetadataEnrichmentService {
         if let lastRequestAt {
             let delta = Date().timeIntervalSince(lastRequestAt)
             if delta < 1 {
-                let delay = UInt64((1 - delta) * 1_000_000_000)
-                try await Task.sleep(nanoseconds: delay)
+                try await Task.sleep(for: .seconds(1 - delta))
             }
         }
         lastRequestAt = Date()
@@ -280,19 +286,36 @@ actor MusicMetadataEnrichmentService {
         return Int(year) != nil ? year : nil
     }
 
-    private static func loadCache(forKey key: String) -> [String: CachedValue] {
-        guard let data = UserDefaults.standard.data(forKey: key) else { return [:] }
-        let decoded = try? JSONDecoder().decode([String: CachedValue].self, from: data)
-        return decoded ?? [:]
+    /// Escapes characters with special meaning in MusicBrainz' Lucene query syntax.
+    private static func luceneEscaped(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
     }
 
+    private static func loadCache(forKey key: String) -> [String: CachedValue] {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let decoded = try? JSONDecoder().decode([String: CachedValue].self, from: data)
+        else { return [:] }
+        let now = Date()
+        return decoded.filter { $0.value.expiresAt > now }
+    }
+
+    /// Persists the cache, dropping expired entries and capping its size so
+    /// UserDefaults doesn't grow without bound.
     private func saveCache() {
+        let now = Date()
+        cache = cache.filter { $0.value.expiresAt > now }
+        if cache.count > maxCacheEntries {
+            let keep = cache.sorted { $0.value.expiresAt > $1.value.expiresAt }.prefix(maxCacheEntries)
+            cache = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
+        }
         guard let data = try? JSONEncoder().encode(cache) else { return }
         UserDefaults.standard.set(data, forKey: storageKey)
     }
 }
 
-private struct MusicBrainzCandidate {
+nonisolated private struct MusicBrainzCandidate {
     let recording: MusicBrainzRecording
     let confidence: Double
 }

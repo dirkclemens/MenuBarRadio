@@ -91,9 +91,7 @@ struct SettingsStationsTabView: View {
                     isRefreshing = true
                     Task {
                         await onRefreshStation(station)
-                        await MainActor.run {
-                            isRefreshing = false
-                        }
+                        isRefreshing = false
                     }
                 }
                 .id(selectedStationID)
@@ -103,12 +101,18 @@ struct SettingsStationsTabView: View {
         }
     }
 
+    /// Binding resolved by ID on every access, so it stays valid when the list changes
+    /// (a captured index could point to the wrong station or crash after a delete).
     private var selectedStationBinding: Binding<RadioStation>? {
-        guard let id = selectedStationID else { return nil }
-        guard let index = player.stations.firstIndex(where: { $0.id == id }) else { return nil }
+        guard let id = selectedStationID,
+              let initial = player.stations.first(where: { $0.id == id })
+        else { return nil }
         return Binding(
-            get: { player.stations[index] },
-            set: { player.stations[index] = $0 }
+            get: { player.stations.first(where: { $0.id == id }) ?? initial },
+            set: { newValue in
+                guard let index = player.stations.firstIndex(where: { $0.id == id }) else { return }
+                player.stations[index] = newValue
+            }
         )
     }
 

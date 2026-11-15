@@ -14,13 +14,15 @@ Fully vibe coded / agentic coded using GPT-5.3-Codex.
 
 - Menu bar app with play/pause controls.
 - Plays stream URLs (AAC/MP3/HLS and other AVPlayer-compatible endpoints).
+- Automatic reconnect with backoff when a stream drops; buffering indicator and error message in the popup.
+- Resuming after a longer pause reloads the stream, so you hear the live broadcast instead of a stale buffer.
 - Timed metadata parsing from radio streams (including `StreamTitle` patterns).
 - Optional metadata provider API polling per station (for richer song data/artwork).
 - Automatic song enrichment on track change (debounced):
   - MusicBrainz search (primary)
   - iTunes Search API fallback
   - Cover Art Archive artwork lookup via MusicBrainz releases
-  - cached results and rate-limited requests
+  - cached results (including misses), bounded cache size and rate-limited requests
 - Now-playing content view in the menu popup:
   - artist
   - title
@@ -50,8 +52,8 @@ Fully vibe coded / agentic coded using GPT-5.3-Codex.
   - launch at login
 - Auto-play last station on app launch (optional).
 - Restore artwork popup window on app launch (optional).
-- Volume control (uses default macOS output device unless overridden).
-- Output device selection (Automatic/system default or a specific device).
+- Volume control.
+- Per-app output device selection (Automatic/system default or a specific device). Only MenuBar Radio is routed; the system output is left untouched, and a disconnected device falls back to the default until it returns.
 - Recent tracks history list in the menu popup.
 - Right-click copy artwork to clipboard.
 - Text selection enabled in metadata panel for easy copy.
@@ -92,16 +94,19 @@ Alternatively, right-click the app in Finder and choose "Open".
 
 - `MenuBarRadioApp.swift`: app entry, `MenuBarExtra`, settings scene.
 - `Service/RadioPlayer.swift`: playback engine, metadata parsing, persistence orchestration.
-- `Models.swift`: station, metadata, and app settings models.
-- `SettingsStore.swift`: `UserDefaults` JSON persistence.
+- `Model/Models.swift`: station, metadata, and app settings models (tolerant decoding, settings migration).
+- `Service/SettingsStore.swift`: `UserDefaults` JSON persistence.
+- `Service/AudioDeviceManager.swift`: CoreAudio output device list with hot-plug updates.
+- `Support/StreamTitleParser.swift`: ICY `StreamTitle` and "Artist - Title" parsing.
 - `View/ContentView.swift`: menu popup layout.
 - `View/HeaderView.swift`: station picker + play/pause.
 - `View/MetadataView.swift`: now-playing metadata panel.
 - `View/VolumeView.swift`: volume slider.
+- `View/OutputDevicePicker.swift`: output device picker (popup + settings).
 - `View/SongHistoryView.swift`: recent tracks history list.
 - `View/StationListView.swift`: station list.
 - `View/FooterActionsView.swift`: settings + quit row.
-- `View/SettingsView.swift`: station and display configuration UI.
+- `View/Settings/`: settings window (stations, directory search, display/playback options).
 - `Service/RadioDirectory.swift`: provider-agnostic directory interface and Radio Browser implementation.
 - `Service/MusicMetadataEnrichmentService.swift`: year/release-date/artwork enrichment with caching and throttling.
 - `Support/NowPlayingMetadata+ReleaseDate.swift`: release date formatting helpers.

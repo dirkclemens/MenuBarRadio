@@ -26,10 +26,19 @@ struct HeaderView: View {
             Button {
                 player.togglePlayPause()
             } label: {
-                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                    .frame(width: 22)
+                Group {
+                    if player.isBuffering {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                    }
+                }
+                .frame(width: 22)
             }
             .buttonStyle(.borderedProminent)
+            .help(player.isPlaying ? "Pause" : "Play")
+            .disabled(player.currentStation == nil)
         }
     }
 }

@@ -4,7 +4,6 @@ import SwiftUI
 /// Display and playback settings tab.
 struct SettingsDisplayTabView: View {
     @EnvironmentObject private var player: RadioPlayer
-    @StateObject private var deviceManager = AudioDeviceManager()
     @StateObject private var loginItemManager = LoginItemManager()
 
     var body: some View {
@@ -21,47 +20,20 @@ struct SettingsDisplayTabView: View {
             Section("Playback") {
                 Toggle("Auto-play last station on app launch", isOn: $player.autoPlayOnLaunch)
                 Toggle("Restore artwork popup on app launch", isOn: $player.restoreArtworkPopupOnLaunch)
-//                Toggle("Record tracks to ~/Music/MenuBarRadio", isOn: $player.recordTracks)
                 Toggle("Show Dock icon", isOn: $player.showDockIcon)
-                    .onChange(of: player.showDockIcon) { _, value in
-                        DockIconManager.apply(showDockIcon: value)
-                    }
                 Toggle("Launch at login", isOn: Binding(
                     get: { loginItemManager.isEnabled },
                     set: { loginItemManager.setEnabled($0) }
                 ))
-                Text("Automatic output follows the system default device.")
-                    .foregroundStyle(.secondary)
+                if let error = loginItemManager.lastError {
+                    Text(error)
+                        .foregroundStyle(.red)
+                }
             }
             Section("Audio Output") {
-                HStack(){
-                    Picker("Output Device", selection: $player.selectedOutputDeviceID) {
-                        Text("Automatic (System Default)")
-                            .tag(UInt32(0))
-                        if player.selectedOutputDeviceID != 0,
-                           !deviceManager.isValidOutputDevice(id: player.selectedOutputDeviceID) {
-                            Text("Unavailable Device")
-                                .tag(player.selectedOutputDeviceID)
-                                .hidden()
-                        }
-                        ForEach(deviceManager.devices) { device in
-                            Text(device.name)
-                                .tag(UInt32(device.id))
-                        }
-                    }
-                    .onChange(of: player.selectedOutputDeviceID) { _, newValue in
-                        if newValue != 0 {
-                            _ = deviceManager.setDefaultOutputDevice(id: newValue)
-                            deviceManager.setDeviceVolume(id: newValue, volume: player.volume)
-                        }
-                    }
-                    Spacer()
-                    Button() {  // "Refresh Devices"
-                        deviceManager.refresh()
-                    } label: {
-                        Image(systemName: "arrow.clockwise.circle")
-                    }
-                }
+                OutputDevicePicker(devices: player.audioDevices)
+                Text("Only MenuBar Radio is routed to the selected device; the system output stays unchanged. If the device is disconnected, playback falls back to the system default and switches back when it returns.")
+                    .foregroundStyle(.secondary)
             }
             Section("Metadata Polling") {
                 Stepper(value: $player.metadataRefreshSeconds, in: 5...60, step: 1) {
@@ -80,17 +52,7 @@ struct SettingsDisplayTabView: View {
         }
         .formStyle(.grouped)
         .onAppear {
-            deviceManager.refresh()
-            if player.selectedOutputDeviceID != 0,
-               !deviceManager.isValidOutputDevice(id: player.selectedOutputDeviceID) {
-                player.selectedOutputDeviceID = 0
-            }
-        }
-        .onChange(of: deviceManager.devices) { _, _ in
-            if player.selectedOutputDeviceID != 0,
-               !deviceManager.isValidOutputDevice(id: player.selectedOutputDeviceID) {
-                player.selectedOutputDeviceID = 0
-            }
+            loginItemManager.refresh()
         }
     }
 }

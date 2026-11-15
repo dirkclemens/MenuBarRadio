@@ -53,7 +53,8 @@ func fetchLyrics(query: String, trackName: String? = nil, artistName: String? = 
     guard let url = components?.url else { return [] }
 
     var request = URLRequest(url: url)
-    request.setValue("MenuBarRadio/1.0", forHTTPHeaderField: "User-Agent")
+    request.timeoutInterval = 20
+    request.setValue(AppInfo.userAgent, forHTTPHeaderField: "User-Agent")
     let (data, _) = try await URLSession.shared.data(for: request)
     return try JSONDecoder().decode([LyricsResponse].self, from: data)
 }

@@ -2,81 +2,92 @@ import AVFoundation
 import AppKit
 import Combine
 import Foundation
-import WidgetKit
+import OSLog
 
 /// Core playback engine: stream control, metadata parsing, and settings persistence.
 @MainActor
 final class RadioPlayer: NSObject, ObservableObject {
-    @Published private(set) var isPlaying = false {
-        didSet { publishWidgetMetadata() }
-    }
+    // MARK: Playback state
+
+    @Published private(set) var isPlaying = false
+    /// `true` while playback was requested but the stream is still connecting/buffering.
+    @Published private(set) var isBuffering = false
+    /// User-facing description of the last stream problem (cleared once audio plays).
+    @Published private(set) var playbackError: String?
     @Published private(set) var currentStation: RadioStation?
-    @Published private(set) var nowPlaying = NowPlayingMetadata() {
-        didSet { publishWidgetMetadata() }
+    @Published private(set) var nowPlaying = NowPlayingMetadata()
+    @Published private(set) var songHistory: [SongHistoryEntry] = [] {
+        didSet { schedulePersist() }
     }
+
+    // MARK: Settings
+
     @Published var stations: [RadioStation] {
-        didSet { persist() }
+        didSet { schedulePersist() }
     }
     @Published var menuBarDisplay: MenuBarDisplayConfiguration {
-        didSet { persist() }
+        didSet { schedulePersist() }
     }
     @Published var volume: Float {
         didSet {
             player.volume = volume
-            if selectedOutputDeviceID != 0 {
-                audioDeviceManager.setDeviceVolume(id: selectedOutputDeviceID, volume: volume)
-            }
-            persist()
+            schedulePersist()
         }
     }
     @Published var metadataRefreshSeconds: Double {
-        didSet { persist() }
+        didSet { schedulePersist() }
     }
     @Published var autoPlayOnLaunch: Bool {
-        didSet { persist() }
+        didSet { schedulePersist() }
     }
     @Published var restoreArtworkPopupOnLaunch: Bool {
-        didSet { persist() }
+        didSet { schedulePersist() }
     }
-    @Published var recordTracks: Bool {
-        didSet {
-            if recordTracks {
-                recordTracks = false
-            }
-            recordingManager.stop()
-            persist()
-        }
-    }
-    @Published var selectedOutputDeviceID: UInt32 {
+    /// CoreAudio UID of the preferred output device; `nil` follows the system default.
+    @Published var selectedOutputDeviceUID: String? {
         didSet {
             applyOutputDeviceSelection()
-            persist()
+            schedulePersist()
         }
     }
     @Published var showDockIcon: Bool {
-        didSet { persist() }
+        didSet {
+            DockIconManager.apply(showDockIcon: showDockIcon)
+            schedulePersist()
+        }
     }
     @Published var songHistoryLimit: Int {
         didSet {
             if songHistoryLimit < 0 { songHistoryLimit = 0 }
             trimSongHistory()
-            persist()
+            schedulePersist()
         }
     }
-    @Published private(set) var songHistory: [SongHistoryEntry] = [] {
-        didSet { persist() }
-    }
+
+    /// Shared output device list (also used by the settings and popover UI).
+    let audioDevices = AudioDeviceManager()
+
+    // MARK: Private state
 
     private let settingsStore = SettingsStore()
-    private let audioDeviceManager = AudioDeviceManager()
     private let enrichmentService = MusicMetadataEnrichmentService()
-    private let recordingManager = TrackRecordingManager()
     private let player = AVPlayer()
-    private var metadataOutput: AVPlayerItemMetadataOutput?
+    private let log = Logger(subsystem: "de.adcore.MenuBarRadio", category: "player")
+
     private var metadataTask: Task<Void, Never>?
     private var metadataEnrichmentTask: Task<Void, Never>?
+    private var persistTask: Task<Void, Never>?
+    private var reconnectTask: Task<Void, Never>?
+    private var reconnectAttempts = 0
+    private var pausedAt: Date?
+    private var embeddedArtworkFileURL: URL?
     private var cancellables = Set<AnyCancellable>()
-    private var itemStatusObservation: NSKeyValueObservation?
+    private var itemCancellables = Set<AnyCancellable>()
+
+    private static let maxReconnectAttempts = 5
+    /// After a pause longer than this, resuming reloads the stream so playback is live again
+    /// instead of continuing from a stale buffer.
+    private static let liveResumeThreshold: TimeInterval = 10
 
     override init() {
         let settings = settingsStore.load()
@@ -86,40 +97,28 @@ final class RadioPlayer: NSObject, ObservableObject {
         self.metadataRefreshSeconds = settings.metadataRefreshSeconds
         self.autoPlayOnLaunch = settings.autoPlayOnLaunch
         self.restoreArtworkPopupOnLaunch = settings.restoreArtworkPopupOnLaunch
-        self.recordTracks = false
-        self.selectedOutputDeviceID = settings.selectedOutputDeviceID
+        self.selectedOutputDeviceUID = settings.selectedOutputDeviceUID
         self.showDockIcon = settings.showDockIcon
-        self.songHistoryLimit = settings.songHistoryLimit
+        self.songHistoryLimit = max(0, settings.songHistoryLimit)
         self.songHistory = settings.songHistory
         super.init()
 
-        player.volume = volume
-        audioDeviceManager.refresh()
-        if selectedOutputDeviceID != 0, !audioDeviceManager.isValidOutputDevice(id: selectedOutputDeviceID) {
-            selectedOutputDeviceID = 0
+        // Migrate the numeric device ID used by ≤ 1.0.2 to a persistent UID.
+        if selectedOutputDeviceUID == nil, let legacyID = settings.legacyOutputDeviceID, legacyID != 0 {
+            selectedOutputDeviceUID = audioDevices.uid(forDeviceID: legacyID)
         }
+
+        player.volume = volume
         applyOutputDeviceSelection()
         trimSongHistory()
+        observePlayer()
 
-        let selectedID = settings.selectedStationID ?? stations.first?.id
-        if let selectedID {
+        if let selectedID = settings.selectedStationID ?? stations.first?.id {
             selectStation(id: selectedID, autoPlay: autoPlayOnLaunch)
         }
-
-        $nowPlaying
-            .map { TrackFingerprint(metadata: $0) }
-            .removeDuplicates()
-            .sink { [weak self] fingerprint in
-                self?.scheduleEnrichment(for: fingerprint)
-                self?.recordHistory(for: fingerprint)
-            }
-            .store(in: &cancellables)
     }
 
-    deinit {
-        metadataTask?.cancel()
-        metadataEnrichmentTask?.cancel()
-    }
+    // MARK: - Menu bar text
 
     /// Builds the menu bar label based on current metadata and settings.
     var menuBarLabel: String {
@@ -133,17 +132,16 @@ final class RadioPlayer: NSObject, ObservableObject {
         if menuBarDisplay.showYear, let year = nowPlaying.releaseYear ?? nowPlaying.year, !year.isEmpty {
             parts.append(year)
         }
-        
-        var text: String
+
+        let text: String
         if parts.isEmpty {
-            text = menuBarDisplay.showStationNameFallback ? (currentStation?.name ?? "") : "" // "Radio"
+            text = menuBarDisplay.showStationNameFallback ? (currentStation?.name ?? "") : ""
         } else {
             text = parts.joined(separator: " • ")
         }
 
         if text.count > menuBarDisplay.maxLength {
-            let clipped = text.prefix(menuBarDisplay.maxLength)
-            return String(clipped) + "…"
+            return String(text.prefix(menuBarDisplay.maxLength)) + "…"
         }
         return text
     }
@@ -166,12 +164,17 @@ final class RadioPlayer: NSObject, ObservableObject {
         if let year = nowPlaying.year {
             lines.append("Year: \(year)")
         }
-        if !nowPlaying.extra.isEmpty {
-            let extraLines = nowPlaying.extra.sorted(by: { $0.key < $1.key }).map { "\($0.key): \($0.value)" }
-            lines.append(contentsOf: extraLines.prefix(8))
-        }
+        lines.append(contentsOf: nowPlaying.displayExtraLines.prefix(8))
         return lines.isEmpty ? "Streaming Radio" : lines.joined(separator: "\n")
     }
+
+    /// UID handed to other players (e.g. the directory preview) so they use the same output.
+    var effectiveOutputDeviceUID: String? {
+        guard let uid = selectedOutputDeviceUID, audioDevices.contains(uid: uid) else { return nil }
+        return uid
+    }
+
+    // MARK: - Transport
 
     func togglePlayPause() {
         if isPlaying {
@@ -182,14 +185,20 @@ final class RadioPlayer: NSObject, ObservableObject {
     }
 
     func play() {
-        if player.currentItem == nil, let id = currentStation?.id {
-            selectStation(id: id, autoPlay: true)
-            return
+        guard let station = currentStation else { return }
+
+        let pausedTooLong = pausedAt.map { Date().timeIntervalSince($0) > Self.liveResumeThreshold } ?? false
+        if player.currentItem == nil || player.currentItem?.status == .failed || pausedTooLong {
+            loadItem(for: station)
         }
+        pausedAt = nil
+        reconnectAttempts = 0
+        playbackError = nil
+
         player.play()
         isPlaying = true
         startMetadataPollingIfNeeded()
-        if (self.restoreArtworkPopupOnLaunch) {
+        if restoreArtworkPopupOnLaunch {
             ArtworkPopupWindowController.shared.show(with: self)
         }
     }
@@ -197,10 +206,13 @@ final class RadioPlayer: NSObject, ObservableObject {
     func pause() {
         player.pause()
         isPlaying = false
+        isBuffering = false
+        pausedAt = Date()
+        reconnectTask?.cancel()
+        reconnectTask = nil
         metadataTask?.cancel()
         metadataTask = nil
-        recordingManager.stop()
-        if (!self.restoreArtworkPopupOnLaunch) {
+        if !restoreArtworkPopupOnLaunch {
             ArtworkPopupWindowController.shared.close()
         }
     }
@@ -208,34 +220,27 @@ final class RadioPlayer: NSObject, ObservableObject {
     /// Switches the player to a given station and optionally starts playback.
     func selectStation(id: UUID, autoPlay: Bool? = nil) {
         guard let station = stations.first(where: { $0.id == id }) else { return }
+        let shouldAutoPlay = autoPlay ?? isPlaying
+
         currentStation = station
         nowPlaying = NowPlayingMetadata()
-        recordingManager.stop()
+        playbackError = nil
+        reconnectTask?.cancel()
+        reconnectAttempts = 0
+        loadItem(for: station)
 
-        guard let url = URL(string: station.streamURL) else { return }
-
-        let item = makePlayerItem(for: url)
-        let output = AVPlayerItemMetadataOutput(identifiers: nil)
-        output.setDelegate(self, queue: .main)
-        item.add(output)
-        metadataOutput = output
-
-        player.replaceCurrentItem(with: item)
-        itemStatusObservation = nil
-        player.volume = volume
-
-        let shouldAutoPlay = autoPlay ?? isPlaying
         if shouldAutoPlay {
             play()
         } else {
             pause()
         }
-        persist()
+        schedulePersist()
     }
 
+    // MARK: - Station list
+
     func addStation() {
-        let newStation = RadioStation(name: "New Station", streamURL: "https://")
-        stations.append(newStation)
+        stations.append(RadioStation(name: "New Station", streamURL: "https://"))
     }
 
     func appendStation(_ station: RadioStation, makeCurrent: Bool = false, autoPlay: Bool = false) {
@@ -247,26 +252,23 @@ final class RadioPlayer: NSObject, ObservableObject {
 
     func updateStation(_ station: RadioStation) {
         guard let index = stations.firstIndex(where: { $0.id == station.id }) else { return }
+        let streamChanged = stations[index].streamURL != station.streamURL
+            || currentStation?.streamURL != station.streamURL
+            || currentStation?.metadataURL != station.metadataURL
         stations[index] = station
-        if currentStation?.id == station.id {
-            currentStation = station
-            if isPlaying {
-                selectStation(id: station.id, autoPlay: true)
-            }
+        guard currentStation?.id == station.id else { return }
+        currentStation = station
+        // Only reconnect when something that affects playback actually changed.
+        guard streamChanged else { return }
+        if isPlaying {
+            selectStation(id: station.id, autoPlay: true)
+        } else {
+            loadItem(for: station)
         }
-    }
-
-    func deleteStations(offsets: IndexSet) {
-        let ids = offsets.compactMap { stations[$0].id }
-        for index in offsets.sorted(by: >) {
-            stations.remove(at: index)
-        }
-        handleDeletedStationIDs(ids)
     }
 
     func deleteStation(id: UUID) {
-        guard let index = stations.firstIndex(where: { $0.id == id }) else { return }
-        stations.remove(at: index)
+        stations.removeAll { $0.id == id }
         handleDeletedStationIDs([id])
     }
 
@@ -274,20 +276,17 @@ final class RadioPlayer: NSObject, ObservableObject {
     func replaceStations(with newStations: [RadioStation]) {
         stations = newStations
 
-        guard !newStations.isEmpty else {
-            currentStation = nil
-            player.replaceCurrentItem(with: nil)
-            pause()
+        guard let first = newStations.first else {
+            stopAndClearCurrentStation()
             return
         }
 
-        if let currentID = currentStation?.id, newStations.contains(where: { $0.id == currentID }) {
-            currentStation = newStations.first(where: { $0.id == currentID })
+        if let currentID = currentStation?.id, let match = newStations.first(where: { $0.id == currentID }) {
+            currentStation = match
             return
         }
 
-        let wasPlaying = isPlaying
-        selectStation(id: newStations[0].id, autoPlay: wasPlaying)
+        selectStation(id: first.id, autoPlay: isPlaying)
     }
 
     func toggleFavorite(id: UUID) {
@@ -298,36 +297,161 @@ final class RadioPlayer: NSObject, ObservableObject {
         }
     }
 
-    /// Polls provider metadata endpoints when configured for a station.
-    private func startMetadataPollingIfNeeded() {
-        metadataTask?.cancel()
-        guard
-            let station = currentStation,
-            let urlString = station.metadataURL,
-            let url = URL(string: urlString),
-            metadataRefreshSeconds >= 5
-        else { return }
+    /// Writes pending settings immediately (used on app termination).
+    func persistNow() {
+        persistTask?.cancel()
+        persistTask = nil
+        settingsStore.save(
+            AppSettings(
+                stations: stations,
+                selectedStationID: currentStation?.id,
+                menuBarDisplay: menuBarDisplay,
+                volume: volume,
+                metadataRefreshSeconds: metadataRefreshSeconds,
+                autoPlayOnLaunch: autoPlayOnLaunch,
+                restoreArtworkPopupOnLaunch: restoreArtworkPopupOnLaunch,
+                selectedOutputDeviceUID: selectedOutputDeviceUID,
+                showDockIcon: showDockIcon,
+                songHistoryLimit: songHistoryLimit,
+                songHistory: songHistory
+            )
+        )
+    }
 
-        metadataTask = Task { [weak self] in
-            while !Task.isCancelled {
-                await self?.fetchProviderMetadata(from: url)
-                let nanoseconds = UInt64((self?.metadataRefreshSeconds ?? 15) * 1_000_000_000)
-                try? await Task.sleep(nanoseconds: nanoseconds)
+    // MARK: - Player item lifecycle
+
+    private func observePlayer() {
+        player.publisher(for: \.timeControlStatus)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] status in
+                guard let self else { return }
+                self.isBuffering = self.isPlaying && status == .waitingToPlayAtSpecifiedRate
+                if status == .playing {
+                    self.reconnectAttempts = 0
+                    self.playbackError = nil
+                }
             }
+            .store(in: &cancellables)
+
+        audioDevices.$devices
+            .dropFirst()
+            // @Published emits before the value is stored; hop once so `devices` is current.
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                // Re-route when the preferred device appears/disappears (e.g. headphones, AirPlay).
+                self?.applyOutputDeviceSelection()
+            }
+            .store(in: &cancellables)
+
+        $nowPlaying
+            .map { TrackFingerprint(metadata: $0) }
+            .removeDuplicates()
+            .sink { [weak self] fingerprint in
+                self?.scheduleEnrichment(for: fingerprint)
+                self?.recordHistory(for: fingerprint)
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)
+            .sink { [weak self] _ in self?.persistNow() }
+            .store(in: &cancellables)
+    }
+
+    /// Creates a fresh player item for the station and wires up failure handling.
+    private func loadItem(for station: RadioStation) {
+        itemCancellables.removeAll()
+        guard let url = URL(string: station.streamURL.trimmingCharacters(in: .whitespacesAndNewlines)),
+              url.scheme != nil
+        else {
+            player.replaceCurrentItem(with: nil)
+            playbackError = "Invalid stream URL."
+            return
+        }
+
+        let item = Self.makePlayerItem(for: url)
+        let output = AVPlayerItemMetadataOutput(identifiers: nil)
+        output.setDelegate(self, queue: .main)
+        item.add(output)
+
+        item.publisher(for: \.status)
+            .filter { $0 == .failed }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self, weak item] _ in
+                self?.handlePlaybackFailure(item?.error)
+            }
+            .store(in: &itemCancellables)
+
+        NotificationCenter.default.publisher(for: AVPlayerItem.failedToPlayToEndTimeNotification, object: item)
+            .map { $0.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] error in self?.handlePlaybackFailure(error) }
+            .store(in: &itemCancellables)
+
+        // A live stream "ending" means the server closed the connection.
+        NotificationCenter.default.publisher(for: AVPlayerItem.didPlayToEndTimeNotification, object: item)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.handlePlaybackFailure(nil) }
+            .store(in: &itemCancellables)
+
+        player.replaceCurrentItem(with: item)
+        player.volume = volume
+        pausedAt = nil
+    }
+
+    /// Retries the stream with exponential backoff (2, 4, 8, 16, 30 s) before giving up.
+    private func handlePlaybackFailure(_ error: Error?) {
+        guard isPlaying, let stationID = currentStation?.id else { return }
+        reconnectTask?.cancel()
+
+        let reason = error?.localizedDescription ?? "Stream ended unexpectedly."
+        log.error("Playback failure (attempt \(self.reconnectAttempts + 1)): \(reason, privacy: .public)")
+
+        guard reconnectAttempts < Self.maxReconnectAttempts else {
+            pause()
+            playbackError = "Stream unavailable: \(reason)"
+            return
+        }
+
+        reconnectAttempts += 1
+        let delay = min(2 * pow(2, Double(reconnectAttempts - 1)), 30)
+        isBuffering = true
+        playbackError = "Connection lost – reconnecting (\(reconnectAttempts)/\(Self.maxReconnectAttempts))…"
+
+        reconnectTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard let self, !Task.isCancelled, self.isPlaying,
+                  let station = self.currentStation, station.id == stationID
+            else { return }
+            self.loadItem(for: station)
+            self.player.play()
+        }
+    }
+
+    private func stopAndClearCurrentStation() {
+        pause()
+        itemCancellables.removeAll()
+        player.replaceCurrentItem(with: nil)
+        currentStation = nil
+        nowPlaying = NowPlayingMetadata()
+        schedulePersist()
+    }
+
+    /// Ensures current station/playback remains valid after deletions.
+    private func handleDeletedStationIDs(_ ids: [UUID]) {
+        guard let currentID = currentStation?.id, ids.contains(currentID) else { return }
+        stopAndClearCurrentStation()
+        if let first = stations.first {
+            selectStation(id: first.id, autoPlay: false)
         }
     }
 
     /// Creates an AVPlayerItem with stream-friendly HTTP headers and buffering.
-    private func makePlayerItem(for url: URL) -> AVPlayerItem {
-        let headers = [
-            "User-Agent": "MenuBarRadio/1.0",
-            "Icy-MetaData": "1"
-        ]
+    static func makePlayerItem(for url: URL) -> AVPlayerItem {
         let asset = AVURLAsset(
             url: url,
             options: [
-                "AVURLAssetHTTPHeaderFieldsKey": headers,
-                "AVURLAssetHTTPUserAgentKey": "MenuBarRadio/1.0"
+                "AVURLAssetHTTPHeaderFieldsKey": ["Icy-MetaData": "1"],
+                AVURLAssetHTTPUserAgentKey: AppInfo.userAgent
             ]
         )
         let item = AVPlayerItem(asset: asset)
@@ -336,14 +460,30 @@ final class RadioPlayer: NSObject, ObservableObject {
         return item
     }
 
-    /// Ensures current station/playback remains valid after deletions.
-    private func handleDeletedStationIDs(_ ids: [UUID]) {
-        if let currentID = currentStation?.id, ids.contains(currentID) {
-            currentStation = nil
-            player.replaceCurrentItem(with: nil)
-            pause()
-            if let first = stations.first {
-                selectStation(id: first.id)
+    private func applyOutputDeviceSelection() {
+        let uid = effectiveOutputDeviceUID
+        if player.audioOutputDeviceUniqueID != uid {
+            player.audioOutputDeviceUniqueID = uid
+        }
+    }
+
+    // MARK: - Provider metadata polling
+
+    /// Polls provider metadata endpoints when configured for a station.
+    private func startMetadataPollingIfNeeded() {
+        metadataTask?.cancel()
+        metadataTask = nil
+        guard
+            let urlString = currentStation?.metadataURL,
+            let url = URL(string: urlString),
+            metadataRefreshSeconds >= 5
+        else { return }
+
+        metadataTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.fetchProviderMetadata(from: url)
+                let seconds = self?.metadataRefreshSeconds ?? 15
+                try? await Task.sleep(for: .seconds(seconds))
             }
         }
     }
@@ -352,10 +492,14 @@ final class RadioPlayer: NSObject, ObservableObject {
     private func fetchProviderMetadata(from url: URL) async {
         guard isPlaying else { return }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
-            let flattened = flatten(json: json)
-            mergeProviderValues(flattened)
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 15
+            request.setValue(AppInfo.userAgent, forHTTPHeaderField: "User-Agent")
+            let (data, _) = try await URLSession.shared.data(for: request)
+            guard !Task.isCancelled,
+                  let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return }
+            mergeProviderValues(Self.flatten(json: json))
         } catch {
             // Non-fatal: many streams don't provide this endpoint.
         }
@@ -366,38 +510,29 @@ final class RadioPlayer: NSObject, ObservableObject {
         var updated = nowPlaying
         let oldFingerprint = TrackFingerprint(metadata: nowPlaying)
         var trackIdentityUpdated = false
-        let candidateArtist = firstMatch(values, keys: ["artist", "now_playing.song.artist", "song.artist", "current.artist"])
-        let candidateTitle = firstMatch(values, keys: ["title", "song", "track", "now_playing.song.title", "song.title", "current.title", "text"])
-        let candidateAlbum = firstMatch(values, keys: ["album", "release", "song.album"])
-        let candidateYear = firstMatch(values, keys: ["year", "song.year", "release_year"])
-        let candidateArtwork = firstMatch(values, keys: ["artwork", "artwork_url", "cover", "cover_url", "image", "image_url", "thumbnail"])
+        let candidateArtist = Self.firstMatch(values, keys: ["artist", "now_playing.song.artist", "song.artist", "current.artist"])
+        let candidateTitle = Self.firstMatch(values, keys: ["title", "song", "track", "now_playing.song.title", "song.title", "current.title", "text"])
+        let candidateAlbum = Self.firstMatch(values, keys: ["album", "release", "song.album"])
+        let candidateYear = Self.firstMatch(values, keys: ["year", "song.year", "release_year"])
+        let candidateArtwork = Self.firstMatch(values, keys: ["artwork", "artwork_url", "cover", "cover_url", "image", "image_url", "thumbnail"])
 
         if let candidateArtist {
             updated.artist = candidateArtist
             trackIdentityUpdated = true
         }
         if let candidateTitle {
-            if updated.artist == nil, candidateTitle.contains(" - ") {
-                let parts = candidateTitle.split(separator: "-", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
-                if parts.count == 2 {
-                    updated.artist = parts[0]
-                    updated.title = parts[1]
-                    trackIdentityUpdated = true
-                } else {
-                    updated.title = candidateTitle
-                    trackIdentityUpdated = true
-                }
+            let split = StreamTitleParser.splitArtistTitle(candidateTitle)
+            if candidateArtist == nil, let artist = split.artist {
+                updated.artist = artist
+                updated.title = split.title
             } else {
                 updated.title = candidateTitle
-                trackIdentityUpdated = true
             }
+            trackIdentityUpdated = true
         }
 
-        if trackIdentityUpdated {
-            let newFingerprint = TrackFingerprint(metadata: updated)
-            if newFingerprint != oldFingerprint {
-                resetStaleMetadata(for: &updated)
-            }
+        if trackIdentityUpdated, TrackFingerprint(metadata: updated) != oldFingerprint {
+            resetStaleMetadata(for: &updated)
         }
 
         if let candidateAlbum {
@@ -411,205 +546,180 @@ final class RadioPlayer: NSObject, ObservableObject {
         }
 
         var extra = values
-        [candidateArtist, candidateTitle, candidateAlbum, candidateYear, candidateArtwork].forEach { match in
+        for match in [candidateArtist, candidateTitle, candidateAlbum, candidateYear, candidateArtwork] {
             if let match, let key = extra.first(where: { $0.value == match })?.key {
                 extra.removeValue(forKey: key)
             }
         }
+        // Keep enrichment bookkeeping (it describes the same track).
+        for key in NowPlayingMetadata.internalExtraKeys.union(["release_date"]) {
+            if let value = updated.extra[key] { extra[key] = value }
+        }
         updated.extra = extra
-        nowPlaying = updated
+        if updated != nowPlaying {
+            nowPlaying = updated
+        }
     }
 
     /// Flattens nested JSON dictionaries into a string map for easy lookup.
-    private func flatten(json: [String: Any], prefix: String = "") -> [String: String] {
+    private static func flatten(json: [String: Any], prefix: String = "") -> [String: String] {
         var result: [String: String] = [:]
         for (key, value) in json {
             let normalizedKey = prefix.isEmpty ? key.lowercased() : "\(prefix).\(key.lowercased())"
             if let dict = value as? [String: Any] {
                 result.merge(flatten(json: dict, prefix: normalizedKey), uniquingKeysWith: { $1 })
             } else if let array = value as? [Any] {
-                let joined = array.map { "\($0)" }.joined(separator: ", ")
-                result[normalizedKey] = joined
-            } else {
+                result[normalizedKey] = array.map { "\($0)" }.joined(separator: ", ")
+            } else if !(value is NSNull) {
                 result[normalizedKey] = "\(value)"
             }
         }
         return result
     }
 
-    private func firstMatch(_ values: [String: String], keys: [String]) -> String? {
-        for key in keys {
-            if let value = values[key], !value.isEmpty {
-                return value
-            }
-        }
-        return nil
+    private static func firstMatch(_ values: [String: String], keys: [String]) -> String? {
+        keys.lazy.compactMap { values[$0] }.first { !$0.isEmpty }
     }
 
-    /// Parses timed metadata (ICY/ID3/common keys) from the stream.
-    private func updateFromTimedMetadata(item: AVMetadataItem) async {
-        var updated = nowPlaying
-        let oldFingerprint = TrackFingerprint(metadata: nowPlaying)
-        var trackIdentityUpdated = false
+    // MARK: - Timed (in-stream) metadata
 
-        let stringValue: String?
-        if #available(macOS 13.0, *) {
-            let loadedValue = try? await item.load(.stringValue)
-            if let loadedValue {
-                stringValue = loadedValue
-            } else {
-                let anyValue = try? await item.load(.value)
-                stringValue = anyValue as? String
+    /// Applies one batch of timed metadata (ICY/ID3/common keys) as a single update, so that
+    /// artist and title arriving in separate items never produce a mixed intermediate track.
+    fileprivate func applyTimedMetadata(_ items: [AVMetadataItem]) async {
+        var values: [(key: String, value: String)] = []
+        var artworkData: Data?
+
+        for item in items {
+            let key = (item.commonKey?.rawValue ?? item.key.map { "\($0)" } ?? "").lowercased()
+            var string = try? await item.load(.stringValue)
+            if string == nil {
+                string = (try? await item.load(.value)) as? String
             }
-        } else {
-            stringValue = item.stringValue ?? item.value as? String
+            if let string, !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                values.append((key, string))
+            }
+            if artworkData == nil, let data = try? await item.load(.dataValue), NSImage(data: data) != nil {
+                artworkData = data
+            }
         }
-        if let stringValue {
-            let normalizedKey = (item.commonKey?.rawValue ?? "\(String(describing: item.key))").lowercased()
 
-            switch normalizedKey {
+        var updated = nowPlaying
+        let oldFingerprint = TrackFingerprint(metadata: updated)
+        var trackIdentityUpdated = false
+        var album: String?
+        var year: String?
+
+        func applyTitle(_ raw: String) {
+            let split = StreamTitleParser.splitArtistTitle(raw)
+            if let artist = split.artist {
+                updated.artist = artist
+            }
+            updated.title = split.title
+            trackIdentityUpdated = true
+        }
+
+        for (key, value) in values {
+            if let icyTitle = StreamTitleParser.icyStreamTitle(in: value) {
+                applyTitle(icyTitle)
+                continue
+            }
+            switch key {
             case "title":
-                if stringValue.contains("StreamTitle='") {
-                    parseICYTitle(stringValue, into: &updated)
-                    trackIdentityUpdated = true
-                } else if stringValue.contains(" - ") {
-                    let parts = stringValue.split(separator: "-", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
-                    if parts.count == 2 {
-                        updated.artist = parts[0]
-                        updated.title = parts[1]
-                        trackIdentityUpdated = true
-                    } else {
-                        updated.title = stringValue
-                        trackIdentityUpdated = true
-                    }
-                } else {
-                    updated.title = stringValue
-                    trackIdentityUpdated = true
-                }
+                applyTitle(value)
             case "artist":
-                updated.artist = stringValue
+                updated.artist = value
                 trackIdentityUpdated = true
             case "albumname", "album":
-                updated.album = stringValue
+                album = value
             case "year":
-                updated.year = stringValue
+                year = value
             default:
-                if stringValue.contains("StreamTitle='") {
-                    parseICYTitle(stringValue, into: &updated)
-                    trackIdentityUpdated = true
-                } else {
-                    updated.extra[normalizedKey] = stringValue
+                if !key.isEmpty, !value.contains("StreamTitle=") {
+                    updated.extra[key] = value
                 }
             }
         }
 
-        if trackIdentityUpdated {
-            let newFingerprint = TrackFingerprint(metadata: updated)
-            if newFingerprint != oldFingerprint {
-                resetStaleMetadata(for: &updated)
-            }
+        if trackIdentityUpdated, TrackFingerprint(metadata: updated) != oldFingerprint {
+            resetStaleMetadata(for: &updated)
+        }
+        if let album { updated.album = album }
+        if let year { updated.year = year }
+        if let artworkData, let fileURL = storeEmbeddedArtwork(artworkData) {
+            updated.artworkURL = fileURL
         }
 
-        let dataValue: Data?
-        if #available(macOS 13.0, *) {
-            dataValue = try? await item.load(.dataValue)
-        } else {
-            dataValue = item.dataValue
+        if updated != nowPlaying {
+            nowPlaying = updated
         }
-        if let data = dataValue, let image = NSImage(data: data), let tiff = image.tiffRepresentation {
-            let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("menubarradio-artwork-\(UUID().uuidString).tiff")
-            try? tiff.write(to: tempURL)
-            updated.artworkURL = tempURL
-        }
-
-        nowPlaying = updated
     }
 
-    /// Extracts artist/title from ICY StreamTitle patterns.
-    private func parseICYTitle(_ raw: String, into metadata: inout NowPlayingMetadata) {
-        let marker = "StreamTitle='"
-        guard let start = raw.range(of: marker)?.upperBound else { return }
-        guard let end = raw[start...].range(of: "';")?.lowerBound else { return }
-        let titleBlock = String(raw[start..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
-        if titleBlock.contains(" - ") {
-            let parts = titleBlock.split(separator: "-", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
-            if parts.count == 2 {
-                metadata.artist = parts[0]
-                metadata.title = parts[1]
-                return
-            }
+    /// Writes in-stream artwork to a temp file (original encoding, previous file removed).
+    private func storeEmbeddedArtwork(_ data: Data) -> URL? {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("menubarradio-artwork-\(UUID().uuidString)")
+        do {
+            try data.write(to: url, options: .atomic)
+        } catch {
+            return nil
         }
-        metadata.title = titleBlock
-    }
-
-    private func persist() {
-        settingsStore.save(
-            AppSettings(
-                stations: stations,
-                selectedStationID: currentStation?.id,
-                menuBarDisplay: menuBarDisplay,
-                volume: volume,
-                metadataRefreshSeconds: metadataRefreshSeconds,
-                autoPlayOnLaunch: autoPlayOnLaunch,
-                restoreArtworkPopupOnLaunch: restoreArtworkPopupOnLaunch,
-                selectedOutputDeviceID: selectedOutputDeviceID,
-                showDockIcon: showDockIcon,
-                songHistoryLimit: songHistoryLimit,
-                songHistory: songHistory,
-                recordTracks: recordTracks
-            )
-        )
-    }
-
-    private func applyOutputDeviceSelection() {
-        guard selectedOutputDeviceID != 0 else {
-            return
+        if let previous = embeddedArtworkFileURL {
+            try? FileManager.default.removeItem(at: previous)
         }
-        _ = audioDeviceManager.setDefaultOutputDevice(id: selectedOutputDeviceID)
-        audioDeviceManager.setDeviceVolume(id: selectedOutputDeviceID, volume: volume)
+        embeddedArtworkFileURL = url
+        return url
     }
 
+    // MARK: - Persistence
+
+    /// Coalesces rapid changes (volume slider, typing in the station editor) into one write.
+    private func schedulePersist() {
+        persistTask?.cancel()
+        persistTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            self?.persistNow()
+        }
+    }
+
+    // MARK: - Enrichment
 
     /// Debounced enrichment lookup for the current track (year/artwork).
     private func scheduleEnrichment(for fingerprint: TrackFingerprint?) {
         metadataEnrichmentTask?.cancel()
         guard let fingerprint else { return }
         let key = fingerprint.cacheKey
-        let alreadyEnriched = nowPlaying.extra["enrichment_key"] == key && (nowPlaying.year?.isEmpty == false || nowPlaying.extra["enrichment_source"] != nil)
+        let alreadyEnriched = nowPlaying.extra["enrichment_key"] == key
+            && (nowPlaying.year?.isEmpty == false || nowPlaying.extra["enrichment_source"] != nil)
         guard !alreadyEnriched else { return }
 
-        metadataEnrichmentTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            guard let self else { return }
-            let result = await enrichmentService.enrich(artist: fingerprint.artist, title: fingerprint.title)
+        metadataEnrichmentTask = Task { [weak self, enrichmentService] in
+            try? await Task.sleep(for: .seconds(2))
             guard !Task.isCancelled else { return }
-            guard let result else { return }
+            let result = await enrichmentService.enrich(artist: fingerprint.artist, title: fingerprint.title)
+            guard let self, !Task.isCancelled, let result else { return }
+            guard TrackFingerprint(metadata: self.nowPlaying) == fingerprint else { return }
 
-            await MainActor.run {
-                let current = TrackFingerprint(metadata: self.nowPlaying)
-                guard current == fingerprint else { return }
-
-                var updated = self.nowPlaying
-                if updated.album == nil || updated.album?.isEmpty == true {
-                    updated.album = result.album
-                }
-                if updated.year == nil || updated.year?.isEmpty == true {
-                    updated.year = result.year
-                }
-                if updated.artworkURL == nil {
-                    updated.artworkURL = result.artworkURL
-                }
-                updated.extra["enrichment_key"] = key
-                updated.extra["enrichment_source"] = result.source
-                updated.extra["enrichment_confidence"] = String(format: "%.2f", result.confidence)
-                if let releaseDate = result.releaseDate {
-                    updated.extra["release_date"] = releaseDate
-                }
-                if let artworkURL = result.artworkURL {
-                    updated.extra["artwork_source_url"] = artworkURL.absoluteString
-                }
-                self.nowPlaying = updated
+            var updated = self.nowPlaying
+            if updated.album?.isEmpty ?? true {
+                updated.album = result.album
             }
+            if updated.year?.isEmpty ?? true {
+                updated.year = result.year
+            }
+            if updated.artworkURL == nil {
+                updated.artworkURL = result.artworkURL
+            }
+            updated.extra["enrichment_key"] = key
+            updated.extra["enrichment_source"] = result.source
+            updated.extra["enrichment_confidence"] = String(format: "%.2f", result.confidence)
+            if let releaseDate = result.releaseDate {
+                updated.extra["release_date"] = releaseDate
+            }
+            if let artworkURL = result.artworkURL {
+                updated.extra["artwork_source_url"] = artworkURL.absoluteString
+            }
+            self.nowPlaying = updated
         }
     }
 
@@ -619,59 +729,31 @@ final class RadioPlayer: NSObject, ObservableObject {
         metadata.year = nil
         metadata.album = nil
         metadata.extra.removeValue(forKey: "release_date")
-        metadata.extra.removeValue(forKey: "artwork_source_url")
-        metadata.extra.removeValue(forKey: "enrichment_source")
-        metadata.extra.removeValue(forKey: "enrichment_confidence")
-        metadata.extra.removeValue(forKey: "enrichment_key")
+        for key in NowPlayingMetadata.internalExtraKeys {
+            metadata.extra.removeValue(forKey: key)
+        }
     }
+
+    // MARK: - History
 
     private func recordHistory(for fingerprint: TrackFingerprint?) {
         guard songHistoryLimit > 0 else {
-            songHistory.removeAll()
+            if !songHistory.isEmpty { songHistory.removeAll() }
             return
         }
-        guard
-            let artist = nowPlaying.artist?.trimmingCharacters(in: .whitespacesAndNewlines),
-            let title = nowPlaying.title?.trimmingCharacters(in: .whitespacesAndNewlines),
-            !artist.isEmpty,
-            !title.isEmpty,
-            let fingerprint
-        else { return }
+        guard let fingerprint else { return }
+        let artist = fingerprint.artist
+        let title = fingerprint.title
 
-//        NSLog("Considering adding to history: \(artist) - \(title)")
-        if isPlaceholder(artist) || isPlaceholder(title) {
-            NSLog("Skipping history due to placeholder metadata: \(artist) - \(title)")
+        if Self.isPlaceholder(artist) || Self.isPlaceholder(title) {
+            log.debug("Skipping history (placeholder): \(artist) - \(title)")
             return
         }
-        if let stationName = currentStation?.name,
-           !stationName.isEmpty,
-           stationName.caseInsensitiveCompare(title) == .orderedSame {
-            NSLog("Skipping history because title matches station name: \(stationName)")
+        if let stationName = currentStation?.name, Self.metadataLooksLikeStationName(artist: artist, title: title, stationName: stationName) {
+            log.debug("Skipping history (station ident): \(artist) - \(title)")
             return
         }
-        if let stationName = currentStation?.name,
-           !stationName.isEmpty,
-           stationName.caseInsensitiveCompare(artist) == .orderedSame {
-            NSLog("Skipping history because artist matches station name: \(stationName)")
-            return
-        }
-        if let stationName = currentStation?.name,
-           !stationName.isEmpty {
-            if containsNormalized(haystack: title, needle: stationName) ||
-                containsNormalized(haystack: artist, needle: stationName) {
-                NSLog("Skipping history because station name is embedded in metadata: \(artist) - \(title) -> \(stationName)")
-                return
-            }
-            let combined = "\(artist) \(title)"
-            let tokens = stationTokens(from: stationName)
-            if matchesStationTokens(in: combined, tokens: tokens) {
-                NSLog("Skipping history because station tokens match metadata: \(artist) - \(title) -> \(stationName)")
-                return
-            }
-        }
-
-        if let last = songHistory.first, last.artist == fingerprint.artist, last.title == fingerprint.title {
-            NSLog("Skipping history because last entry matches current track")
+        if let last = songHistory.first, last.artist == artist, last.title == title {
             return
         }
 
@@ -684,88 +766,58 @@ final class RadioPlayer: NSObject, ObservableObject {
             stationName: currentStation?.name,
             playedAt: Date()
         )
-        NSLog("Adding to history: \(entry.artist) - \(entry.title) (Station: \(entry.stationName ?? "N/A"))")
+        log.debug("Adding to history: \(artist) - \(title)")
         songHistory.insert(entry, at: 0)
         trimSongHistory()
-
-        // Recording disabled.
     }
 
     private func trimSongHistory() {
-        guard songHistoryLimit > 0 else {
-            songHistory.removeAll()
-            return
-        }
         if songHistory.count > songHistoryLimit {
             songHistory = Array(songHistory.prefix(songHistoryLimit))
         }
     }
 
-    private func isPlaceholder(_ value: String) -> Bool {
+    private static let placeholders: Set<String> = [
+        "unknown", "unknown artist", "unknown title",
+        "no title metadata", "no artist metadata",
+        "n/a", "na", "not available",
+        "stream", "streaming", "radio", "live",
+        "advertisement", "ads", "commercial",
+        "verbraucherinformationen", "werbung", "reklame"
+    ]
+
+    private static func isPlaceholder(_ value: String) -> Bool {
         let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if normalized.isEmpty { return true }
-        let placeholders: Set<String> = [
-            "unknown", "unknown artist", "unknown title",
-            "no title metadata", "no artist metadata",
-            "n/a", "na", "not available",
-            "stream", "streaming", "radio", "live",
-            "advertisement", "ads", "commercial",
-            "verbraucherinformationen", "werbung", "reklame"
-        ]
-        if placeholders.contains(normalized) { return true }
-        if normalized.contains("unknown") { return true }
-        if normalized.contains("no title") || normalized.contains("no artist") { return true }
-        if normalized.contains("advert") || normalized.contains("commercial") { return true }
-        return false
+        if normalized.isEmpty || placeholders.contains(normalized) { return true }
+        return ["unknown", "no title", "no artist", "advert", "commercial"].contains { normalized.contains($0) }
     }
 
-    private func containsNormalized(haystack: String, needle: String) -> Bool {
-        let normalizedHaystack = normalizeForComparison(haystack)
-        let normalizedNeedle = normalizeForComparison(needle)
-        guard !normalizedNeedle.isEmpty else { return false }
-        return normalizedHaystack.contains(normalizedNeedle)
-    }
+    /// Detects station idents/jingles that are broadcast as "track" metadata.
+    private static func metadataLooksLikeStationName(artist: String, title: String, stationName: String) -> Bool {
+        let station = normalizeForComparison(stationName)
+        guard !station.isEmpty else { return false }
+        if normalizeForComparison(artist).contains(station) || normalizeForComparison(title).contains(station) {
+            return true
+        }
 
-    private func normalizeForComparison(_ value: String) -> String {
-        value
-            .lowercased()
-            .replacingOccurrences(of: "&", with: "and")
-            .filter { $0.isLetter || $0.isNumber }
-    }
-
-    private func stationTokens(from stationName: String) -> [String] {
         let stopwords: Set<String> = ["radio", "fm", "am", "stream", "live", "station", "the"]
-        return stationName
+        let tokens = stationName
             .lowercased()
             .replacingOccurrences(of: "&", with: "and")
             .split { !$0.isLetter && !$0.isNumber }
             .map(String.init)
             .filter { $0.count >= 3 && !stopwords.contains($0) }
-    }
-
-    private func matchesStationTokens(in value: String, tokens: [String]) -> Bool {
         guard !tokens.isEmpty else { return false }
-        let normalized = value.lowercased()
-        let matchCount = tokens.reduce(0) { count, token in
-            normalized.contains(token) ? count + 1 : count
-        }
+        let combined = "\(artist) \(title)".lowercased()
+        let matchCount = tokens.filter { combined.contains($0) }.count
         return matchCount >= min(2, tokens.count)
     }
 
-    private func startRecordingIfPossible(with fingerprint: TrackFingerprint) {
-        // Recording disabled.
-    }
-
-    private func publishWidgetMetadata() {
-        let metadata = ArtworkPopupData(
-            title: nowPlaying.title,
-            artist: nowPlaying.artist,
-            album: nowPlaying.album,
-            year: nowPlaying.releaseYear,
-            releaseDate: nowPlaying.formattedReleaseDate(),
-            artworkURL: nowPlaying.artworkURL
-        )
-        WidgetMetadataStore.shared.save(metadata: metadata, isPlaying: isPlaying)
+    private static func normalizeForComparison(_ value: String) -> String {
+        value
+            .lowercased()
+            .replacingOccurrences(of: "&", with: "and")
+            .filter { $0.isLetter || $0.isNumber }
     }
 }
 
@@ -798,13 +850,12 @@ extension RadioPlayer: AVPlayerItemMetadataOutputPushDelegate {
         didOutputTimedMetadataGroups groups: [AVTimedMetadataGroup],
         from track: AVPlayerItemTrack?
     ) {
+        // AVMetadataItem is immutable (AVMutableMetadataItem is the mutable subclass, which the
+        // metadata output never delivers), so handing the items to the main actor is safe.
+        nonisolated(unsafe) let items = groups.flatMap(\.items)
+        guard !items.isEmpty else { return }
         Task { @MainActor [weak self] in
-            guard let self else { return }
-            for group in groups {
-                for item in group.items {
-                    await updateFromTimedMetadata(item: item)
-                }
-            }
+            await self?.applyTimedMetadata(items)
         }
     }
 }
